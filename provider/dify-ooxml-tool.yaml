@@ -1,0 +1,20 @@
+identity:
+  author: "ding113"
+  name: "dify-ooxml-tool"
+  label:
+    en_US: "OOXML Translation Tool"
+    zh_Hans: "OOXML翻译工具"
+    pt_BR: "OOXML Translation Tool"
+  description:
+    en_US: "Extract, translate and rebuild OOXML documents (DOCX, XLSX, PPTX) while preserving formatting"
+    zh_Hans: "提取、翻译和重建OOXML文档（DOCX、XLSX、PPTX），同时保留格式"
+    pt_BR: "Extract, translate and rebuild OOXML documents (DOCX, XLSX, PPTX) while preserving formatting"
+  icon: "icon.svg"
+tools:
+  - tools/extract_ooxml_text.yaml
+  - tools/get_translation_texts.yaml
+  - tools/update_translations.yaml
+  - tools/rebuild_ooxml_document.yaml
+extra:
+  python:
+    source: provider/dify-ooxml-tool.py

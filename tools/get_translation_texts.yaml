@@ -1,0 +1,50 @@
+identity:
+  name: get_translation_texts
+  author: ding113
+  label:
+    en_US: "Get Texts for Translation"
+    zh_Hans: "获取待翻译文本"
+description:
+  human:
+    en_US: "Retrieve all extracted texts in XML format for LLM translation with guaranteed segment correspondence"
+    zh_Hans: "以XML格式检索所有提取的文本供LLM翻译，确保段落对应关系"
+  llm: "Extract and format text segments in XML format for LLM translation. Each text segment is wrapped in <segment id=\"XXX\"> tags to ensure 1:1 correspondence between original and translated texts. This prevents LLM from merging or splitting segments."
+parameters:
+  - name: file_id
+    type: string
+    required: true
+    label:
+      en_US: "File Processing ID"
+      zh_Hans: "文件处理ID"
+    human_description:
+      en_US: "The file identifier from the extraction step"
+      zh_Hans: "来自提取步骤的文件标识符"
+    llm_description: "The file identifier from the extraction step"
+    form: llm
+extra:
+  python:
+    source: tools/get_translation_texts.py
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: "Whether retrieval was successful"
+    file_id:
+      type: string
+      description: "The file processing identifier"
+    original_texts:
+      type: string
+      description: "All original texts formatted as XML segments with sequential IDs (<segment id=\"001\">text</segment>), preserving exact order for translation"
+    text_count:
+      type: integer
+      description: "Total number of text segments"
+    preview:
+      type: string
+      description: "First 200 characters of the text collection"
+    file_type:
+      type: string
+      description: "Source file type for context"
+    message:
+      type: string
+      description: "Status message"

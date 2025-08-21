@@ -1,0 +1,58 @@
+identity:
+  name: update_translations
+  author: ding113
+  label:
+    en_US: "Update Translation Results"
+    zh_Hans: "更新翻译结果"
+description:
+  human:
+    en_US: "Parse XML-formatted translation results and update stored text segments with guaranteed segment correspondence"
+    zh_Hans: "解析XML格式的翻译结果并更新存储的文本段，确保段落对应关系"
+  llm: "Parse XML-formatted translation results and update stored text segments. Expects translations in <segment id=\"XXX\">translated text</segment> format to ensure perfect 1:1 mapping with original segments."
+parameters:
+  - name: file_id
+    type: string
+    required: true
+    label:
+      en_US: "File Processing ID"
+      zh_Hans: "文件处理ID"
+    human_description:
+      en_US: "The file identifier"
+      zh_Hans: "文件标识符"
+    llm_description: "The file identifier"
+    form: llm
+  - name: translated_texts
+    type: string
+    required: true
+    label:
+      en_US: "Translated Texts"
+      zh_Hans: "翻译后的文本"
+    human_description:
+      en_US: "XML-formatted LLM translations with sequential IDs (<segment id=\"001\">translated text</segment>), must maintain exact segment correspondence"
+      zh_Hans: "带有序列ID的XML格式LLM翻译（<segment id=\"001\">翻译文本</segment>），必须保持精确的段落对应关系"
+    llm_description: "XML-formatted LLM translations in the format: <segment id=\"001\">translated text</segment><segment id=\"002\">translated text</segment>... Must maintain exact segment correspondence with original text IDs."
+    form: llm
+extra:
+  python:
+    source: tools/update_translations.py
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: "Whether update was successful"
+    file_id:
+      type: string
+      description: "The file processing identifier"
+    updated_count:
+      type: integer
+      description: "Number of translations successfully updated"
+    skipped_count:
+      type: integer
+      description: "Number of empty translations skipped"
+    mismatch_warning:
+      type: boolean
+      description: "Whether there was a count mismatch between original and translated texts"
+    message:
+      type: string
+      description: "Detailed status message"

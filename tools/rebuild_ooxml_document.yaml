@@ -1,0 +1,50 @@
+identity:
+  name: rebuild_ooxml_document
+  author: ding113
+  label:
+    en_US: "Generate Translated Document"
+    zh_Hans: "生成翻译后的文档"
+description:
+  human:
+    en_US: "Rebuild the OOXML document with translated text while preserving all formatting"
+    zh_Hans: "使用翻译文本重建OOXML文档，同时保留所有格式"
+  llm: "Reconstruct the original OOXML document by precisely replacing text elements with translations while maintaining all formatting, styles, and layout"
+parameters:
+  - name: file_id
+    type: string
+    required: true
+    label:
+      en_US: "File Processing ID"
+      zh_Hans: "文件处理ID"
+    human_description:
+      en_US: "The file identifier for the document to rebuild"
+      zh_Hans: "要重建的文档的文件标识符"
+    llm_description: "The file identifier for the document to rebuild"
+    form: llm
+extra:
+  python:
+    source: tools/rebuild_ooxml_document.py
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: "Whether document reconstruction was successful"
+    file_id:
+      type: string
+      description: "The file processing identifier"
+    output_filename:
+      type: string
+      description: "Generated filename for the translated document"
+    file_size_mb:
+      type: number
+      description: "Size of the generated file in MB"
+    replaced_count:
+      type: integer
+      description: "Number of text elements successfully replaced"
+    download_url:
+      type: string
+      description: "Base64 encoded content for downloading the translated document"
+    message:
+      type: string
+      description: "Detailed processing status"

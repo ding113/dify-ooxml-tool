@@ -1,0 +1,64 @@
+identity:
+  name: extract_ooxml_text
+  author: ding113
+  label:
+    en_US: "Extract OOXML Text for Translation"
+    zh_Hans: "提取OOXML文本用于翻译"
+description:
+  human:
+    en_US: "Parse DOCX/XLSX/PPTX files and extract all translatable text with position tracking"
+    zh_Hans: "解析DOCX/XLSX/PPTX文件并提取所有可翻译文本及位置信息"
+  llm: "Extract all translatable text from OOXML documents (DOCX, XLSX, PPTX) while preserving exact XML locations for format-preserving translation reconstruction"
+parameters:
+  - name: input_file
+    type: file
+    required: true
+    label:
+      en_US: "OOXML Document File"
+      zh_Hans: "OOXML文档文件"
+    human_description:
+      en_US: "Upload a DOCX, XLSX, or PPTX file for text extraction and translation processing"
+      zh_Hans: "上传DOCX、XLSX或PPTX文件进行文本提取和翻译处理"
+    llm_description: "Upload a DOCX, XLSX, or PPTX file for text extraction. Supports Microsoft Office document formats including Word documents (.docx), Excel spreadsheets (.xlsx), and PowerPoint presentations (.pptx)"
+    form: llm
+  - name: file_id
+    type: string
+    required: true
+    label:
+      en_US: "File Processing ID"
+      zh_Hans: "文件处理ID"
+    human_description:
+      en_US: "Unique identifier for this document processing session"
+      zh_Hans: "此文档处理会话的唯一标识符"
+    llm_description: "Unique identifier for this document processing session, used to track state across workflow nodes"
+    form: llm
+extra:
+  python:
+    source: tools/extract_ooxml_text.py
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+      description: "Whether extraction was successful"
+    file_id:
+      type: string
+      description: "The file processing identifier"
+    file_type:
+      type: string
+      enum: ["docx", "xlsx", "pptx"]
+      description: "Detected OOXML file type"
+    extracted_text_count:
+      type: integer
+      description: "Number of extractable text segments found"
+    file_size_mb:
+      type: number
+      description: "Original file size in MB"
+    supported_elements:
+      type: array
+      items:
+        type: string
+      description: "List of XML element types found (w:t, si, a:t, etc.)"
+    message:
+      type: string
+      description: "Status message or error details"
