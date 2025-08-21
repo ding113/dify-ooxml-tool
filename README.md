@@ -9,10 +9,8 @@ OOXML Translation Tool is a Dify plugin that provides format-preserving translat
 ## Features
 
 - **Format-Preserving Translation**: Maintains all original formatting, styles, images, and layout
-- **Multi-Format Support**: Supports DOCX (Word), XLSX (Excel), and PPTX (PowerPoint) documents  
+- **Multi-Format Support**: Supports DOCX (Word), XLSX (Excel), and PPTX (PowerPoint) documents
 - **LLM Integration**: Optimized XML format prevents segment merging/splitting during translation
-- **Enterprise Security**: XML security hardening, ZIP bomb protection, and comprehensive input validation
-- **Workflow Integration**: 4-stage pipeline designed for Dify workflow automation
 - **Precise Reconstruction**: Uses exact XML location tracking for surgical text replacement
 - **Intelligent Space Handling**: Preserves whitespace and formatting nuances
 
@@ -139,26 +137,12 @@ For batch processing, use an iteration node:
    - Use file_id: "batch_{{#iteration.index}}"
 ```
 
-## Installation
-
-### Prerequisites
-- Dify platform installation
-- Access to LLM for translation (GPT-4, Claude, etc.)
-
-### Setup Steps
-
-1. **Download Plugin**: Download the OOXML Translation Tool plugin package
-2. **Install Plugin**: Upload through Dify plugin management interface  
-3. **Create Workflow**: Set up translation workflow using the 4 tools
-4. **Configure LLM**: Connect your preferred language model for translation
-5. **Test**: Upload a sample document to verify the complete pipeline
-
 ## Usage Examples
 
 ### Input Document Types
-- **Word Documents (.docx)**: Reports, contracts, articles
-- **Excel Spreadsheets (.xlsx)**: Data tables, forms, reports  
-- **PowerPoint Presentations (.pptx)**: Slides, training materials
+- **Word Documents (.docx)**
+- **Excel Spreadsheets (.xlsx)**
+- **PowerPoint Presentations (.pptx)**
 
 ### XML Format Example
 
@@ -182,58 +166,9 @@ LLM should respond with the same structure:
 
 Original Document → Translated Document with:
 - ✅ Same formatting and styles
-- ✅ Same images and charts  
+- ✅ Same images and charts
 - ✅ Same layout and structure
 - ✅ Translated text content
-
-## Error Handling
-
-The plugin includes robust error handling for:
-
-- **Invalid File Formats**: Validates OOXML structure and file integrity
-- **Large Files**: Protects against ZIP bombs (max 100MB, 10K files)
-- **Translation Mismatches**: Verifies segment count consistency
-- **Storage Issues**: Handles persistent storage failures gracefully
-- **XML Security**: Prevents XXE attacks and malicious content
-
-Common error scenarios and solutions:
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| "Extraction failed" | Invalid OOXML file | Verify file format and integrity |
-| "Segment count mismatch" | LLM changed segment structure | Check LLM prompt and output format |
-| "Rebuild error" | Missing translation data | Ensure all previous steps completed |
-| "File too large" | File exceeds limits | Use smaller files (<100MB, <10K components) |
-
-## Performance Considerations
-
-- **Optimal File Size**: Best performance with files under 50MB
-- **Memory Usage**: Requires ~3x file size in memory during processing
-- **Processing Time**: Varies by document complexity (typically 30s-2min)
-- **Concurrent Processing**: Supports multiple documents with unique file_ids
-
-## Supported Formats
-
-| Format | Extension | Elements Extracted |
-|--------|-----------|-------------------|
-| Word | .docx | Text runs, paragraphs, headers, footers |
-| Excel | .xlsx | Cell values, shared strings, formulas |
-| PowerPoint | .pptx | Text boxes, slide content, notes |
-
-## Security Features
-
-- **ZIP Bomb Protection**: File count and size limits
-- **XML Security**: Disabled external entity resolution
-- **Input Validation**: Comprehensive file format verification
-- **Memory Limits**: Controlled resource usage
-- **No Temporary Files**: In-memory processing only
-
-## Limitations
-
-- Maximum file size: 100MB
-- Maximum internal files: 10,000 per ZIP
-- Supported formats: DOCX, XLSX, PPTX only
-- Requires structured XML output from LLM
 
 ## Contributing
 
@@ -246,17 +181,3 @@ Contributions welcome! Please ensure:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-- **Plugin Issues**: Open an issue in this repository
-- **Dify Integration**: Check [Dify documentation](https://docs.dify.ai)
-- **OOXML Standards**: Refer to [Microsoft documentation](https://docs.microsoft.com/office)
-
----
-
-**Author**: ding113  
-**Version**: 0.0.1  
-**Plugin Type**: Tool Provider
-
-Made with ❤️ for document translation workflows
