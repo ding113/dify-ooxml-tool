@@ -21,6 +21,17 @@ parameters:
       zh_Hans: "要重建的文档的文件标识符"
     llm_description: "The file identifier for the document to rebuild"
     form: llm
+  - name: input_file
+    type: file
+    required: true
+    label:
+      en_US: "Original OOXML File"
+      zh_Hans: "原始OOXML文件"
+    human_description:
+      en_US: "The original OOXML file (DOCX, XLSX, or PPTX) to rebuild with translations"
+      zh_Hans: "要用翻译内容重建的原始OOXML文件（DOCX、XLSX或PPTX）"
+    llm_description: "The original OOXML document file that needs to be rebuilt with translated text. Must be the same file used in extraction step."
+    form: llm
 extra:
   python:
     source: tools/rebuild_ooxml_document.py
