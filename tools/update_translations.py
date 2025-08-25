@@ -391,20 +391,25 @@ class UpdateTranslationsTool(Tool):
             return []
     
     def _store_text_segments(self, file_id: str, text_segments: list):
-        """Store updated text segments to persistent storage."""
+        """Store updated text segments to persistent storage with format consistency."""
         logger.debug(f"[UpdateTranslations] Storing text segments for file_id: {file_id}, count: {len(text_segments)}")
         try:
-            texts_key = f"{file_id}_texts"
-            # Optimize JSON serialization - do it once
-            texts_bytes = json.dumps(text_segments, ensure_ascii=False).encode('utf-8')
-            json_size = len(texts_bytes)
-            logger.debug(f"[UpdateTranslations] Storing segments - Key: {texts_key}, Size: {json_size} bytes")
-            self.session.storage.set(texts_key, texts_bytes)
+            # Detect original storage format to maintain consistency
+            batch_metadata = self._get_batch_metadata(file_id)
+            
+            if batch_metadata:
+                # Original was batched storage - use batched format
+                logger.info(f"[UpdateTranslations] Detected batched storage format, maintaining consistency")
+                self._store_segments_batched(file_id, text_segments)
+            else:
+                # Original was single-key storage - use single-key with compression
+                logger.info(f"[UpdateTranslations] Using single-key compressed storage format")
+                self._store_segments_single(file_id, text_segments)
             
             # Verify storage by counting translations
             translated_count = sum(1 for seg in text_segments if seg.get('translated_text', '').strip())
             logger.debug(f"[UpdateTranslations] Storage verification - Total segments: {len(text_segments)}, Translated: {translated_count}")
-            logger.info(f"[UpdateTranslations] Text segments stored successfully")
+            logger.info(f"[UpdateTranslations] Text segments stored successfully with format consistency")
         except Exception as e:
             logger.error(f"[UpdateTranslations] Failed to store text segments: {str(e)}")
             logger.debug(f"[UpdateTranslations] Storage error details - segments_count: {len(text_segments)}, file_id: {file_id}")
@@ -414,6 +419,72 @@ class UpdateTranslationsTool(Tool):
         """Get current timestamp in ISO format."""
         from datetime import datetime
         return datetime.now().isoformat()
+    
+    def _store_segments_batched(self, file_id: str, text_segments: list, batch_size: int = 50):
+        """Store text segments in compressed batches (consistent with extract_ooxml_text format)."""
+        import concurrent.futures
+        
+        total_size = 0
+        batch_count = (len(text_segments) + batch_size - 1) // batch_size  # Ceiling division
+        
+        logger.debug(f"[UpdateTranslations] Batched storage: {len(text_segments)} segments in {batch_count} batches of {batch_size}")
+        
+        # Use threading for parallel batch processing (consistent with extract_ooxml_text)
+        def store_batch(batch_index: int, batch_data: list) -> int:
+            batch_json = self._fast_json_encode(batch_data)
+            batch_compressed = gzip.compress(batch_json)
+            batch_key = f"{file_id}_texts_batch_{batch_index}"
+            self.session.storage.set(batch_key, batch_compressed)
+            
+            compression_ratio = (1 - len(batch_compressed) / len(batch_json)) * 100
+            logger.debug(f"[UpdateTranslations] Batch {batch_index}: {len(batch_json)}→{len(batch_compressed)} bytes ({compression_ratio:.1f}% reduction)")
+            return len(batch_compressed)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for i in range(0, len(text_segments), batch_size):
+                batch_index = i // batch_size
+                batch_data = text_segments[i:i + batch_size]
+                future = executor.submit(store_batch, batch_index, batch_data)
+                futures.append(future)
+            
+            # Collect results
+            for future in concurrent.futures.as_completed(futures):
+                total_size += future.result()
+        
+        # Update batch metadata to reflect new data
+        batch_metadata = {
+            'batch_count': batch_count,
+            'batch_size': batch_size,
+            'total_segments': len(text_segments),
+            'storage_format': 'batched_compressed'
+        }
+        batch_meta_json = self._fast_json_encode(batch_metadata)
+        batch_meta_compressed = gzip.compress(batch_meta_json)
+        batch_meta_key = f"{file_id}_batch_metadata"
+        self.session.storage.set(batch_meta_key, batch_meta_compressed)
+        total_size += len(batch_meta_compressed)
+        
+        logger.info(f"[UpdateTranslations] Batched storage completed: {batch_count} batches, {total_size} bytes total")
+    
+    def _store_segments_single(self, file_id: str, text_segments: list):
+        """Store text segments in single compressed key (consistent with extract_ooxml_text format)."""
+        segments_json = self._fast_json_encode(text_segments)
+        segments_compressed = gzip.compress(segments_json)
+        segments_key = f"{file_id}_texts"
+        self.session.storage.set(segments_key, segments_compressed)
+        
+        compression_ratio = (1 - len(segments_compressed) / len(segments_json)) * 100
+        logger.debug(f"[UpdateTranslations] Single-key compression: {len(segments_json)}→{len(segments_compressed)} bytes ({compression_ratio:.1f}% reduction)")
+        logger.info(f"[UpdateTranslations] Single-key compressed storage completed: {len(segments_compressed)} bytes")
+    
+    def _fast_json_encode(self, data) -> bytes:
+        """High-performance JSON encoding with orjson fallback."""
+        if ORJSON_AVAILABLE:
+            return orjson.dumps(data, option=orjson.OPT_NON_STR_KEYS)
+        else:
+            return json.dumps(data, ensure_ascii=False).encode('utf-8')
+    
     
     def _get_segment_mapping(self, file_id: str) -> dict:
         """读取segment映射关系，用于空格恢复，支持压缩格式。"""
