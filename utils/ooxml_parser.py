@@ -330,19 +330,47 @@ class OOXMLParser:
             return []
     
     def _extract_xlsx_worksheet_text(self, zip_file: zipfile.ZipFile, xml_path: str) -> List[Dict[str, Any]]:
-        """Extract direct text from Excel worksheet (rare cases)."""
+        """Extract direct text from Excel worksheet (inline strings)."""
         try:
             xml_content = zip_file.read(xml_path)
             root = self._secure_parse_xml(xml_content)
             text_segments = []
             
-            # Find cells with direct text (not shared strings) - optimize query
-            text_cells = root.xpath("//c[@t!='s']//v", namespaces={'x': self.namespaces.get('x', '')})
+            # Excel命名空间处理 - 支持多种命名空间格式
+            excel_ns = {'x': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            
+            # 查找内联字符串单元格 (t="str") 和其他文本单元格
+            text_cells = []
+            
+            # Method 1: 尝试使用命名空间查询内联字符串
+            inline_string_cells = root.xpath("//x:c[@t='str']/x:v", namespaces=excel_ns)
+            text_cells.extend(inline_string_cells)
+            
+            # Method 2: 尝试使用命名空间查询内联字符串 (无引号值)
+            inline_string_cells_2 = root.xpath("//x:c[@t='inlineStr']/x:is/x:t", namespaces=excel_ns)
+            text_cells.extend(inline_string_cells_2)
+            
+            # Method 3: 如果命名空间方法失败，尝试无命名空间方法
+            if not text_cells:
+                # 无命名空间查询 - 内联字符串
+                text_cells.extend(root.xpath("//c[@t='str']/v"))
+                text_cells.extend(root.xpath("//c[@t='inlineStr']/is/t"))
+                
+            # Method 4: 查找所有可能包含文本的单元格(非数字，非共享字符串引用)
+            if not text_cells:
+                # 查找所有非共享字符串的单元格值
+                all_cells = root.xpath("//x:c[not(@t='s')]/x:v", namespaces=excel_ns)
+                if not all_cells:
+                    all_cells = root.xpath("//c[not(@t='s')]/v")
+                text_cells.extend(all_cells)
+            
+            self.logger.debug(f"Found {len(text_cells)} text cells in {xml_path}")
             
             for idx, cell_elem in enumerate(text_cells):
                 text_content = cell_elem.text or ""
-                # 保留所有文本元素（包括空格），但跳过纯数字
-                if not text_content.isdigit():  # Skip numbers, but keep spaces and text
+                
+                # 过滤纯数字和空内容，但保留包含文字的内容
+                if text_content.strip() and not text_content.replace('.', '').replace('-', '').replace('+', '').isdigit():
                     xpath = self._create_element_xpath(cell_elem)
                     
                     # 分析空格信息
@@ -356,7 +384,7 @@ class OOXMLParser:
                         "xml_location": {
                             "xml_file_path": xml_path,
                             "element_xpath": xpath,
-                            "parent_context": cell_elem.getparent().tag if cell_elem.getparent() is not None else "",  # Just store tag name
+                            "parent_context": cell_elem.getparent().tag if cell_elem.getparent() is not None else "",
                             "namespace_map": {"x": self.namespaces.get("x", "")}
                         },
                         "text_metadata": {
@@ -366,7 +394,9 @@ class OOXMLParser:
                         "space_info": space_info
                     })
             
+            self.logger.info(f"Extracted {len(text_segments)} text segments from {xml_path}")
             return text_segments
+            
         except Exception as e:
             self.logger.error(f"Error extracting worksheet text from {xml_path}: {str(e)}")
             return []

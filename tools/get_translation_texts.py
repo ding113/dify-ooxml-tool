@@ -1,7 +1,15 @@
 import json
+import gzip
 import logging
 from collections.abc import Generator
 from typing import Any
+
+# Use orjson for high-performance JSON deserialization, fallback to standard json
+try:
+    import orjson
+    ORJSON_AVAILABLE = True
+except ImportError:
+    ORJSON_AVAILABLE = False
 
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
@@ -161,7 +169,7 @@ class GetTranslationTextsTool(Tool):
             })
     
     def _get_metadata(self, file_id: str) -> dict:
-        """Get metadata from persistent storage."""
+        """Get metadata from persistent storage with compression support."""
         logger.debug(f"[GetTranslationTexts] Reading metadata for file_id: {file_id}")
         try:
             metadata_key = f"{file_id}_metadata"
@@ -171,17 +179,31 @@ class GetTranslationTextsTool(Tool):
                 logger.warning(f"[GetTranslationTexts] No metadata found for key: {metadata_key}")
                 return {}
             
-            metadata = json.loads(metadata_data.decode('utf-8'))
-            logger.debug(f"[GetTranslationTexts] Metadata loaded successfully - Keys: {list(metadata.keys())}")
+            # Try compressed format first (new format)
+            try:
+                decompressed_data = gzip.decompress(metadata_data)
+                metadata = self._fast_json_decode(decompressed_data)
+                logger.debug(f"[GetTranslationTexts] Compressed metadata loaded successfully - Keys: {list(metadata.keys())}")
+            except (gzip.BadGzipFile, OSError):
+                # Fallback to legacy format (uncompressed)
+                metadata = json.loads(metadata_data.decode('utf-8'))
+                logger.debug(f"[GetTranslationTexts] Legacy metadata loaded successfully - Keys: {list(metadata.keys())}")
+            
             return metadata
         except Exception as e:
             logger.error(f"[GetTranslationTexts] Error reading metadata: {str(e)}")
             return {}
     
     def _get_text_segments(self, file_id: str) -> list:
-        """Get text segments from persistent storage."""
+        """Get text segments from persistent storage with compression and batch support."""
         logger.debug(f"[GetTranslationTexts] Reading text segments for file_id: {file_id}")
         try:
+            # First, check if we have batched storage
+            batch_metadata = self._get_batch_metadata(file_id)
+            if batch_metadata:
+                return self._get_segments_batched(file_id, batch_metadata)
+            
+            # Try single storage (both compressed and legacy)
             texts_key = f"{file_id}_texts"
             logger.debug(f"[GetTranslationTexts] Fetching text segments with key: {texts_key}")
             texts_data = self.session.storage.get(texts_key)
@@ -189,8 +211,18 @@ class GetTranslationTextsTool(Tool):
                 logger.warning(f"[GetTranslationTexts] No text segments found for key: {texts_key}")
                 return []
             
-            segments = json.loads(texts_data.decode('utf-8'))
-            logger.debug(f"[GetTranslationTexts] Text segments loaded successfully - Count: {len(segments)}")
+            # Try compressed format first (new format)
+            try:
+                decompressed_data = gzip.decompress(texts_data)
+                segments = self._fast_json_decode(decompressed_data)
+                logger.debug(f"[GetTranslationTexts] Compressed text segments loaded successfully - Count: {len(segments)}")
+            except (gzip.BadGzipFile, OSError):
+                # Fallback to legacy format (uncompressed)
+                segments = json.loads(texts_data.decode('utf-8'))
+                logger.debug(f"[GetTranslationTexts] Legacy text segments loaded successfully - Count: {len(segments)}")
+            
+            # Restore namespace maps if optimized format is detected
+            segments = self._restore_optimized_data(segments, file_id)
             
             # Log some sample segment info for debugging
             if segments:
@@ -221,3 +253,101 @@ class GetTranslationTextsTool(Tool):
         except Exception as e:
             logger.error(f"[GetTranslationTexts] Error XML escaping text: {str(e)}")
             return text  # Return original if escaping fails
+    
+    def _fast_json_decode(self, data: bytes) -> any:
+        """High-performance JSON decoding with orjson fallback."""
+        if ORJSON_AVAILABLE:
+            return orjson.loads(data)
+        else:
+            return json.loads(data.decode('utf-8'))
+    
+    def _get_batch_metadata(self, file_id: str) -> dict:
+        """Get batch metadata for batched storage format."""
+        try:
+            batch_meta_key = f"{file_id}_batch_metadata"
+            batch_meta_data = self.session.storage.get(batch_meta_key)
+            if not batch_meta_data:
+                return {}
+            
+            # Try compressed format first
+            try:
+                decompressed_data = gzip.decompress(batch_meta_data)
+                return self._fast_json_decode(decompressed_data)
+            except (gzip.BadGzipFile, OSError):
+                return self._fast_json_decode(batch_meta_data)
+        except Exception as e:
+            logger.debug(f"[GetTranslationTexts] No batch metadata found: {str(e)}")
+            return {}
+    
+    def _get_segments_batched(self, file_id: str, batch_metadata: dict) -> list:
+        """Retrieve text segments from batched storage format."""
+        batch_count = batch_metadata.get('batch_count', 0)
+        total_segments = batch_metadata.get('total_segments', 0)
+        
+        logger.debug(f"[GetTranslationTexts] Loading batched segments: {batch_count} batches, {total_segments} total segments")
+        
+        all_segments = []
+        for batch_index in range(batch_count):
+            batch_key = f"{file_id}_texts_batch_{batch_index}"
+            batch_data = self.session.storage.get(batch_key)
+            
+            if batch_data:
+                try:
+                    # Try compressed format first
+                    try:
+                        decompressed_data = gzip.decompress(batch_data)
+                        batch_segments = self._fast_json_decode(decompressed_data)
+                    except (gzip.BadGzipFile, OSError):
+                        batch_segments = self._fast_json_decode(batch_data)
+                    
+                    all_segments.extend(batch_segments)
+                    logger.debug(f"[GetTranslationTexts] Loaded batch {batch_index}: {len(batch_segments)} segments")
+                except Exception as e:
+                    logger.warning(f"[GetTranslationTexts] Failed to load batch {batch_index}: {str(e)}")
+            else:
+                logger.warning(f"[GetTranslationTexts] Batch {batch_index} not found")
+        
+        logger.info(f"[GetTranslationTexts] Batched loading complete: {len(all_segments)}/{total_segments} segments loaded")
+        
+        # Restore namespace maps if optimized format is detected
+        return self._restore_optimized_data(all_segments, file_id)
+    
+    def _restore_optimized_data(self, segments: list, file_id: str) -> list:
+        """Restore namespace maps from optimized format using metadata registry."""
+        if not segments:
+            return segments
+        
+        # Check if any segment has namespace_ref (indicating optimized format)
+        has_optimization = any(
+            seg.get('xml_location', {}).get('namespace_ref') is not None
+            for seg in segments
+        )
+        
+        if not has_optimization:
+            logger.debug("[GetTranslationTexts] No optimization detected, segments unchanged")
+            return segments
+        
+        # Get namespace registry from metadata
+        metadata = self._get_metadata(file_id)
+        namespace_registry = metadata.get('namespace_registry', {})
+        
+        if not namespace_registry:
+            logger.warning("[GetTranslationTexts] Optimized format detected but no namespace registry found")
+            return segments
+        
+        # Restore namespace maps
+        restored_segments = []
+        for segment in segments:
+            restored_segment = segment.copy()
+            xml_location = restored_segment.get('xml_location', {})
+            namespace_ref = xml_location.get('namespace_ref')
+            
+            if namespace_ref and namespace_ref in namespace_registry:
+                # Restore the full namespace_map
+                xml_location['namespace_map'] = namespace_registry[namespace_ref]
+                xml_location.pop('namespace_ref', None)  # Remove the reference
+            
+            restored_segments.append(restored_segment)
+        
+        logger.debug(f"[GetTranslationTexts] Data restoration complete: {len(namespace_registry)} namespace patterns restored")
+        return restored_segments

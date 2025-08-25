@@ -230,7 +230,7 @@ class RebuildOoxmlDocumentTool(Tool):
                 logger.debug(f"[RebuildOoxmlDocument] Legacy text segments loaded successfully - Count: {len(segments)}")
             
             # Restore namespace maps if optimized format is detected
-            segments = self._restore_optimized_data(segments)
+            segments = self._restore_optimized_data(segments, file_id)
             
             # Count translated vs untranslated for debugging
             translated_count = sum(1 for seg in segments if seg.get('translated_text', '').strip())
@@ -354,9 +354,9 @@ class RebuildOoxmlDocumentTool(Tool):
         logger.info(f"[RebuildOoxmlDocument] Batched loading complete: {len(all_segments)}/{total_segments} segments loaded")
         
         # Restore namespace maps if optimized format is detected
-        return self._restore_optimized_data(all_segments)
+        return self._restore_optimized_data(all_segments, file_id)
     
-    def _restore_optimized_data(self, segments: list) -> list:
+    def _restore_optimized_data(self, segments: list, file_id: str) -> list:
         """Restore namespace maps from optimized format using metadata registry."""
         if not segments:
             return segments
@@ -371,13 +371,18 @@ class RebuildOoxmlDocumentTool(Tool):
             logger.debug("[RebuildOoxmlDocument] No optimization detected, segments unchanged")
             return segments
         
-        # Get namespace registry from metadata
-        file_id = segments[0].get('text_id', '').split('_')[0] if segments else ''
-        metadata = self._get_metadata(file_id) if file_id else {}
+        # Get namespace registry from metadata using provided file_id
+        if not file_id:
+            logger.error("[RebuildOoxmlDocument] No file_id provided for metadata lookup")
+            return segments
+        
+        metadata = self._get_metadata(file_id)
         namespace_registry = metadata.get('namespace_registry', {})
         
         if not namespace_registry:
             logger.warning("[RebuildOoxmlDocument] Optimized format detected but no namespace registry found")
+            # Continue without namespace restoration rather than failing completely
+            logger.info("[RebuildOoxmlDocument] Continuing with original segments without namespace restoration")
             return segments
         
         # Restore namespace maps
