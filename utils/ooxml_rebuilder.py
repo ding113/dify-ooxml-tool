@@ -247,7 +247,16 @@ class OOXMLRebuilder:
                         namespace_map = xml_location.get('namespace_map', {})
                         
                         # 使用正确的命名空间查找si元素
-                        if 'default' in namespace_map:
+                        if 'x' in namespace_map:
+                            # 使用标准Excel命名空间
+                            si_elements = root.xpath(f"//x:si[{shared_string_index + 1}]", namespaces=namespace_map)
+                            if si_elements:
+                                si_elem = si_elements[0]
+                                t_elements = si_elem.xpath(".//x:t", namespaces=namespace_map)
+                                if t_elements:
+                                    t_elements[0].text = translated_text
+                                    replaced_count += 1
+                        elif 'default' in namespace_map:
                             # 使用默认命名空间
                             si_elements = root.xpath(f"//default:si[{shared_string_index + 1}]", namespaces=namespace_map)
                             if si_elements:
