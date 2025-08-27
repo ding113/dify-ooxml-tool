@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2025-08-27
+
+### 🎉 Major Features Added
+- **Chunked Translation Support**: Added support for chunked translation workflows using iteration nodes
+  - `get_translation_texts` now supports `output_format` parameter with "string" and "array" options
+  - Array output creates optimally sized chunks (~1500 characters or 50 XML segments each)
+  - `update_translations` now handles both single string and array chunk inputs
+  - Full backward compatibility with existing single-string workflows
+
+### 🔧 Technical Improvements
+- **Enhanced Parameter Processing**: Advanced dynamic type detection for iteration node parameters
+  - Automatic detection and parsing of serialized arrays from iteration nodes
+  - Support for both real arrays and string-serialized arrays: `"['chunk1', 'chunk2']"`
+  - Robust error handling with fallback to string processing
+- **Storage Format Consistency**: Fixed critical storage format mismatch between tools
+  - `update_translations` now preserves original storage format (batched/compressed/simple)
+  - Maintains compatibility with extract tool's batched+compressed storage
+  - Ensures proper data flow from extract → get_texts → update → rebuild
+- **Performance Optimizations**: Enhanced JSON processing with orjson integration
+  - High-performance serialization/deserialization
+  - Optimized chunk combination and processing
+  - Improved logging for better debugging
+
+### 🐛 Bug Fixes
+- Fixed "No translations found" error in rebuild step after successful updates
+- Resolved parameter serialization issues with iteration node arrays
+- Fixed storage key inconsistencies between workflow steps
+- Improved error handling for malformed translation inputs
+
+### 📚 Documentation Updates
+- Added comprehensive chunked translation workflow documentation
+- Updated tool descriptions with array parameter support
+- Enhanced variable references for iteration node integration
+- Improved error messages and troubleshooting guidance
+
+### 🧪 Testing & Validation
+- Verified end-to-end chunked translation workflow
+- Tested serialized array parsing from iteration nodes
+- Validated storage format preservation across all tools
+- Confirmed backward compatibility with existing workflows
+
+## [0.0.3] - 2025-08-20
+
+### 🚀 Performance & Storage Enhancements
+- Implemented gzip compression for all storage operations
+- Added orjson for high-performance JSON processing
+- Enhanced metadata handling and storage optimization
+- Improved memory efficiency for large documents
+
+### 🔧 Core Improvements
+- Added batch processing support for large document handling
+- Enhanced error handling and logging throughout the pipeline
+- Improved XML parsing with better security protections
+- Optimized text extraction performance
+
+## [0.0.2] - 2025-08-20
+
+### 🎯 Core Features
+- Enhanced performance with orjson and gzip for storage optimization
+- Added input_file parameter for original document in rebuild tool
+- Improved metadata handling and storage efficiency
+
+### 🔧 Technical Updates
+- Optimized JSON serialization and compression
+- Enhanced storage key management
+- Better error handling for file operations
+
 ## [0.0.1] - 2025-01-21
 
 ### Added

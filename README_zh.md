@@ -10,9 +10,11 @@ OOXML翻译工具是一个Dify插件，为Microsoft Office文档（DOCX、XLSX�
 
 - **格式保持翻译**：保持所有原始格式、样式、图片和布局
 - **多格式支持**：支持DOCX（Word）、XLSX（Excel）和PPTX（PowerPoint）文档
+- **分块翻译支持**：支持单字符串和分块数组翻译工作流
 - **LLM集成优化**：优化的XML格式防止翻译过程中的段落合并/分割
 - **精确重建**：使用确切的XML位置跟踪进行精准文本替换
 - **智能空格处理**：保持空白字符和格式细节
+- **迭代节点兼容**：与Dify迭代节点无缝配合，支持并行处理
 
 ## 工具概览
 
@@ -21,9 +23,9 @@ OOXML翻译工具是一个Dify插件，为Microsoft Office文档（DOCX、XLSX�
 | 工具 | 用途 | 输入 | 输出 |
 |------|------|------|------|
 | `extract_ooxml_text` | 从文档提取文本 | OOXML文件 + 文件ID | 文本段落及元数据 |
-| `get_translation_texts` | 格式化文本供LLM使用 | 文件ID | XML格式化的段落 |
+| `get_translation_texts` | 格式化文本供LLM使用 | 文件ID + 格式选项 | XML格式化的段落（字符串/数组） |
 | `update_translations` | 更新LLM翻译结果 | 文件ID + 翻译结果 | 更新后的段落 |
-| `rebuild_ooxml_document` | 生成最终文档 | 文件ID | 翻译后的文档文件 |
+| `rebuild_ooxml_document` | 生成最终文档 | 文件ID + 输入文件 | 翻译后的文档文件 |
 
 ## 工具参数
 
@@ -36,16 +38,19 @@ OOXML翻译工具是一个Dify插件，为Microsoft Office文档（DOCX、XLSX�
 
 ### 2. 获取翻译文本工具
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `file_id` | string | 是 | 来自提取步骤的文件标识符 |
+| 参数 | 类型 | 必需 | 默认值 | 描述 |
+|------|------|------|-------|------|
+| `file_id` | string | 是 | - | 来自提取步骤的文件标识符 |
+| `output_format` | select | 否 | "string" | 输出格式："string"为单个文本块，"array"为分块文本 |
+| `chunk_size` | number | 否 | 1500 | 每块最大字符数（当output_format="array"时） |
+| `max_segments_per_chunk` | number | 否 | 50 | 每块最大XML段落数（当output_format="array"时） |
 
 ### 3. 更新翻译工具
 
 | 参数 | 类型 | 必需 | 描述 |
 |------|------|------|------|
 | `file_id` | string | 是 | 文件标识符 |
-| `translated_texts` | string | 是 | 来自LLM的XML格式翻译结果 |
+| `translated_texts` | string | 否 | 来自LLM的XML格式翻译结果（支持字符串和数组格式） |
 
 ### 4. 重建OOXML文档工具
 

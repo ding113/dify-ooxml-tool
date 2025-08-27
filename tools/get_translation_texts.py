@@ -33,12 +33,17 @@ class GetTranslationTextsTool(Tool):
         try:
             # Get parameters
             file_id = tool_parameters.get("file_id", "")
+            output_format = tool_parameters.get("output_format", "string")
+            chunk_size = tool_parameters.get("chunk_size", 1500)
+            max_segments_per_chunk = tool_parameters.get("max_segments_per_chunk", 50)
             
             # Validate required parameters
             if not file_id:
                 logger.error("[GetTranslationTexts] Missing required parameter: file_id")
                 yield self.create_text_message("Error: file_id is required.")
                 return
+            
+            logger.info(f"[GetTranslationTexts] Parameters - Output format: {output_format}, Chunk size: {chunk_size}, Max segments: {max_segments_per_chunk}")
             
             logger.info(f"[GetTranslationTexts] Processing file_id: {file_id}")
             logger.debug(f"[GetTranslationTexts] Starting XML text retrieval process")
@@ -120,41 +125,73 @@ class GetTranslationTextsTool(Tool):
                 segment_id = f"{idx+1:03d}"
                 xml_segments.append(f'<segment id="{segment_id}">{escaped_text}</segment>')
             
-            output_text = '\n'.join(xml_segments)
-            output_length = len(output_text)
-            logger.info(f"[GetTranslationTexts] XML output created - {len(xml_segments)} segments, Total length: {output_length} characters")
-            
-            if not output_text:
+            if not xml_segments:
                 logger.warning("[GetTranslationTexts] No translatable text found - all segments were empty")
                 yield self.create_text_message("Warning: No translatable text found in the document.")
                 return
             
-            # Create preview (first 200 characters)
-            preview = output_text[:200] + "..." if len(output_text) > 200 else output_text
-            logger.debug(f"[GetTranslationTexts] Preview created - Length: {len(preview)} characters")
-            logger.debug(f"[GetTranslationTexts] Preview content: {preview[:100]}...")
-            
-            logger.info(f"[GetTranslationTexts] Successfully retrieved {len(content_segments)} text segments for translation")
-            logger.debug(f"[GetTranslationTexts] Output statistics - Total chars: {output_length}, Lines: {len(content_segments)}, Preview length: {len(preview)}")
-            yield self.create_text_message(f"Retrieved {len(content_segments)} text segments for translation")
-            
-            # Output the texts for LLM translation
-            logger.info(f"[GetTranslationTexts] Creating variable output for LLM translation")
-            yield self.create_variable_message("original_texts", output_text)
-            
-            # Return detailed results
-            result = {
-                "success": True,
-                "file_id": file_id,
-                "original_texts": output_text,
-                "text_count": len(content_segments),
-                "preview": preview,
-                "file_type": metadata.get("file_type", "unknown"),
-                "space_count": space_count,
-                "empty_count": empty_count,
-                "total_segments": len(text_segments),
-                "message": f"Successfully retrieved {len(content_segments)} text segments for translation"
-            }
+            # Handle different output formats
+            if output_format == "array":
+                # Create chunks for parallel processing
+                logger.info(f"[GetTranslationTexts] Creating chunks for array output format")
+                chunks = self._create_chunks(xml_segments, chunk_size, max_segments_per_chunk)
+                chunk_count = len(chunks)
+                
+                # Calculate total length for preview
+                output_text = '\n'.join(xml_segments)
+                output_length = len(output_text)
+                preview = output_text[:200] + "..." if len(output_text) > 200 else output_text
+                
+                logger.info(f"[GetTranslationTexts] Created {chunk_count} chunks from {len(xml_segments)} segments")
+                logger.debug(f"[GetTranslationTexts] Chunk statistics - Total chars: {output_length}, Chunks: {chunk_count}")
+                
+                yield self.create_text_message(f"Created {chunk_count} chunks from {len(content_segments)} text segments for parallel translation")
+                
+                # Output chunks as array for iteration node
+                yield self.create_variable_message("chunks", chunks)
+                
+                # Return detailed results for array format
+                result = {
+                    "success": True,
+                    "file_id": file_id,
+                    "chunks": chunks,
+                    "text_count": len(content_segments),
+                    "chunk_count": chunk_count,
+                    "preview": preview,
+                    "file_type": metadata.get("file_type", "unknown"),
+                    "space_count": space_count,
+                    "empty_count": empty_count,
+                    "total_segments": len(text_segments),
+                    "message": f"Successfully created {chunk_count} chunks from {len(content_segments)} text segments for parallel translation"
+                }
+            else:
+                # Single string output (original behavior)
+                output_text = '\n'.join(xml_segments)
+                output_length = len(output_text)
+                preview = output_text[:200] + "..." if len(output_text) > 200 else output_text
+                
+                logger.info(f"[GetTranslationTexts] XML output created - {len(xml_segments)} segments, Total length: {output_length} characters")
+                logger.debug(f"[GetTranslationTexts] Preview created - Length: {len(preview)} characters")
+                
+                yield self.create_text_message(f"Retrieved {len(content_segments)} text segments for translation")
+                
+                # Output the texts for LLM translation
+                logger.info(f"[GetTranslationTexts] Creating variable output for LLM translation")
+                yield self.create_variable_message("original_texts", output_text)
+                
+                # Return detailed results for string format
+                result = {
+                    "success": True,
+                    "file_id": file_id,
+                    "original_texts": output_text,
+                    "text_count": len(content_segments),
+                    "preview": preview,
+                    "file_type": metadata.get("file_type", "unknown"),
+                    "space_count": space_count,
+                    "empty_count": empty_count,
+                    "total_segments": len(text_segments),
+                    "message": f"Successfully retrieved {len(content_segments)} text segments for translation"
+                }
             
             yield self.create_json_message(result)
             
@@ -351,3 +388,65 @@ class GetTranslationTextsTool(Tool):
         
         logger.debug(f"[GetTranslationTexts] Data restoration complete: {len(namespace_registry)} namespace patterns restored")
         return restored_segments
+    
+    def _create_chunks(self, xml_segments: list, chunk_size: int, max_segments_per_chunk: int) -> list:
+        """
+        智能创建XML段落块，优化并行翻译处理。
+        
+        Args:
+            xml_segments: XML格式的文本段落列表
+            chunk_size: 每个块的最大字符数
+            max_segments_per_chunk: 每个块的最大段落数
+            
+        Returns:
+            分块后的XML字符串列表，每个字符串包含多个XML段落
+        """
+        if not xml_segments:
+            return []
+        
+        logger.debug(f"[GetTranslationTexts] Starting chunking process - {len(xml_segments)} segments, chunk_size: {chunk_size}, max_segments: {max_segments_per_chunk}")
+        
+        chunks = []
+        current_chunk = []
+        current_chunk_size = 0
+        
+        for segment in xml_segments:
+            segment_size = len(segment)
+            
+            # 检查是否应该开始新的块
+            should_start_new_chunk = (
+                # 当前块已有内容且添加新段落会超过大小限制
+                (current_chunk and current_chunk_size + segment_size + 1 > chunk_size) or  # +1 for newline
+                # 或者已达到最大段落数限制
+                (current_chunk and len(current_chunk) >= max_segments_per_chunk)
+            )
+            
+            if should_start_new_chunk:
+                # 完成当前块并开始新块
+                if current_chunk:
+                    chunk_text = '\n'.join(current_chunk)
+                    chunks.append(chunk_text)
+                    logger.debug(f"[GetTranslationTexts] Chunk {len(chunks)} created - {len(current_chunk)} segments, {current_chunk_size} chars")
+                
+                # 开始新块
+                current_chunk = [segment]
+                current_chunk_size = segment_size
+            else:
+                # 添加到当前块
+                current_chunk.append(segment)
+                current_chunk_size += segment_size + 1  # +1 for newline
+        
+        # 处理最后一个块
+        if current_chunk:
+            chunk_text = '\n'.join(current_chunk)
+            chunks.append(chunk_text)
+            logger.debug(f"[GetTranslationTexts] Final chunk {len(chunks)} created - {len(current_chunk)} segments, {current_chunk_size} chars")
+        
+        logger.info(f"[GetTranslationTexts] Chunking complete - Created {len(chunks)} chunks from {len(xml_segments)} segments")
+        
+        # 记录每个块的统计信息
+        for i, chunk in enumerate(chunks):
+            chunk_lines = chunk.count('\n') + 1
+            logger.debug(f"[GetTranslationTexts] Chunk {i+1}: {len(chunk)} chars, {chunk_lines} segments")
+        
+        return chunks

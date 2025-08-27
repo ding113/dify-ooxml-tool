@@ -23,14 +23,14 @@ parameters:
     form: llm
   - name: translated_texts
     type: string
-    required: true
+    required: false
     label:
       en_US: "Translated Texts"
       zh_Hans: "翻译后的文本"
     human_description:
-      en_US: "XML-formatted LLM translations with sequential IDs (<segment id=\"001\">translated text</segment>), must maintain exact segment correspondence"
-      zh_Hans: "带有序列ID的XML格式LLM翻译（<segment id=\"001\">翻译文本</segment>），必须保持精确的段落对应关系"
-    llm_description: "XML-formatted LLM translations in the format: <segment id=\"001\">translated text</segment><segment id=\"002\">translated text</segment>... Must maintain exact segment correspondence with original text IDs."
+      en_US: "XML-formatted LLM translations with sequential IDs (<segment id=\"001\">translated text</segment>). Supports both single string format and array format from iteration nodes."
+      zh_Hans: "带有序列ID的XML格式LLM翻译（<segment id=\"001\">翻译文本</segment>）。支持单个字符串格式和来自迭代节点的数组格式。"
+    llm_description: "XML-formatted LLM translations. Can be either: 1) Single string format: <segment id=\"001\">text</segment><segment id=\"002\">text</segment>... 2) Array format from iteration nodes: each array element contains XML segments. Tool automatically detects the input format."
     form: llm
 extra:
   python:
@@ -53,6 +53,12 @@ output_schema:
     mismatch_warning:
       type: boolean
       description: "Whether there was a count mismatch between original and translated texts"
+    input_format:
+      type: string
+      description: "The input format detected: 'single_string' or 'array_chunks'"
+    chunks_processed:
+      type: integer
+      description: "Number of translation chunks processed (when using array input)"
     message:
       type: string
       description: "Detailed status message"

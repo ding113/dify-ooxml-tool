@@ -3,6 +3,7 @@ import gzip
 import logging
 import xml.etree.ElementTree as ET
 import re
+import ast
 from collections.abc import Generator
 from typing import Any
 
@@ -33,7 +34,7 @@ class UpdateTranslationsTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
         logger.info("[UpdateTranslations] Starting translation update process")
         try:
-            # Get parameters
+            # Get parameters with dynamic type detection
             file_id = tool_parameters.get("file_id", "")
             translated_texts = tool_parameters.get("translated_texts", "")
             
@@ -44,13 +45,58 @@ class UpdateTranslationsTool(Tool):
                 return
             
             if not translated_texts:
-                logger.error("[UpdateTranslations] Missing required parameter: translated_texts")
+                logger.error("[UpdateTranslations] Missing translation input: translated_texts is required")
                 yield self.create_text_message("Error: translated_texts is required.")
                 return
             
-            logger.info(f"[UpdateTranslations] Processing file_id: {file_id}")
-            logger.debug(f"[UpdateTranslations] Translation input length: {len(translated_texts)} characters")
-            yield self.create_text_message(f"Updating translations for file_id: {file_id}")
+            # Dynamic type detection and processing with string-array parsing
+            logger.info(f"[UpdateTranslations] Parameter type: {type(translated_texts)}")
+            logger.debug(f"[UpdateTranslations] Parameter content preview: {str(translated_texts)[:200]}...")
+            
+            if isinstance(translated_texts, list):
+                # Real array input format (from iteration node)
+                input_format = "array_chunks"
+                chunks_processed = len(translated_texts)
+                combined_translations = self._combine_chunks(translated_texts)
+                logger.info(f"[UpdateTranslations] Processing real array input - {chunks_processed} chunks")
+                yield self.create_text_message(f"Processing {chunks_processed} translation chunks for file_id: {file_id}")
+            
+            elif isinstance(translated_texts, str) and translated_texts.startswith("['") and translated_texts.endswith("']"):
+                # String representation of array from iteration node (serialized array)
+                logger.info("[UpdateTranslations] Detected serialized array format - attempting to parse")
+                try:
+                    parsed_array = ast.literal_eval(translated_texts)
+                    if isinstance(parsed_array, list):
+                        input_format = "array_chunks"  
+                        chunks_processed = len(parsed_array)
+                        combined_translations = self._combine_chunks(parsed_array)
+                        logger.info(f"[UpdateTranslations] Successfully parsed serialized array - {chunks_processed} chunks")
+                        yield self.create_text_message(f"Processing {chunks_processed} parsed translation chunks for file_id: {file_id}")
+                    else:
+                        # Parsed result is not a list, fallback to string processing
+                        input_format = "single_string"
+                        chunks_processed = 0
+                        combined_translations = str(translated_texts)
+                        logger.warning("[UpdateTranslations] Parsed result is not a list - falling back to string processing")
+                        yield self.create_text_message(f"Processing single translation string for file_id: {file_id}")
+                except (ValueError, SyntaxError) as e:
+                    # Parse failed, treat as regular string
+                    input_format = "single_string"
+                    chunks_processed = 0
+                    combined_translations = str(translated_texts)
+                    logger.warning(f"[UpdateTranslations] Failed to parse serialized array ({str(e)}) - treating as string")
+                    yield self.create_text_message(f"Processing single translation string for file_id: {file_id}")
+            
+            else:
+                # Single string input format (original workflow)
+                input_format = "single_string"
+                chunks_processed = 0
+                combined_translations = str(translated_texts)  # Ensure string type
+                logger.info(f"[UpdateTranslations] Processing single string input - {len(combined_translations)} characters")
+                yield self.create_text_message(f"Processing single translation string for file_id: {file_id}")
+            
+            logger.info(f"[UpdateTranslations] Input format detected: {input_format}")
+            logger.debug(f"[UpdateTranslations] Combined translation length: {len(combined_translations)} characters")
             
             # Read existing text segments
             logger.info(f"[UpdateTranslations] Reading existing text segments")
@@ -68,7 +114,7 @@ class UpdateTranslationsTool(Tool):
             
             # Parse the XML formatted translated texts
             logger.debug(f"[UpdateTranslations] Parsing XML formatted translations")
-            translation_dict = self._parse_xml_translations(translated_texts)
+            translation_dict = self._parse_xml_translations(combined_translations)
             logger.info(f"[UpdateTranslations] Found {len(translation_dict)} translation segments")
             
             # Debug: Show sample translations
@@ -196,7 +242,9 @@ class UpdateTranslationsTool(Tool):
                 "space_recovered_count": space_recovered_count,
                 "skipped_count": skipped_count,
                 "mismatch_warning": mismatch_warning,
-                "message": f"Successfully updated {updated_count} translations and recovered {space_recovered_count} space segments"
+                "chunks_processed": chunks_processed,
+                "input_format": input_format,
+                "message": f"Successfully updated {updated_count} translations and recovered {space_recovered_count} space segments using {input_format} input"
             }
             
             yield self.create_json_message(result)
@@ -391,100 +439,127 @@ class UpdateTranslationsTool(Tool):
             return []
     
     def _store_text_segments(self, file_id: str, text_segments: list):
-        """Store updated text segments to persistent storage with format consistency."""
+        """Store updated text segments to persistent storage, preserving original format."""
         logger.debug(f"[UpdateTranslations] Storing text segments for file_id: {file_id}, count: {len(text_segments)}")
         try:
-            # Detect original storage format to maintain consistency
+            # Check if the original data was stored in batched format
             batch_metadata = self._get_batch_metadata(file_id)
             
             if batch_metadata:
-                # Original was batched storage - use batched format
-                logger.info(f"[UpdateTranslations] Detected batched storage format, maintaining consistency")
-                self._store_segments_batched(file_id, text_segments)
+                # Original data was stored in batched format - preserve this format
+                logger.info(f"[UpdateTranslations] Storing in batched format to preserve original structure")
+                self._store_segments_batched(file_id, text_segments, batch_metadata)
             else:
-                # Original was single-key storage - use single-key with compression
-                logger.info(f"[UpdateTranslations] Using single-key compressed storage format")
-                self._store_segments_single(file_id, text_segments)
+                # Original data was stored in simple format - use simple format but check compression
+                logger.info(f"[UpdateTranslations] Storing in simple format")
+                self._store_segments_simple(file_id, text_segments)
             
             # Verify storage by counting translations
             translated_count = sum(1 for seg in text_segments if seg.get('translated_text', '').strip())
             logger.debug(f"[UpdateTranslations] Storage verification - Total segments: {len(text_segments)}, Translated: {translated_count}")
-            logger.info(f"[UpdateTranslations] Text segments stored successfully with format consistency")
+            logger.info(f"[UpdateTranslations] Text segments stored successfully")
         except Exception as e:
             logger.error(f"[UpdateTranslations] Failed to store text segments: {str(e)}")
             logger.debug(f"[UpdateTranslations] Storage error details - segments_count: {len(text_segments)}, file_id: {file_id}")
-            raise Exception(f"Failed to store updated text segments: {str(e)}")    
+            raise Exception(f"Failed to store updated text segments: {str(e)}")
+    
+    def _store_segments_simple(self, file_id: str, text_segments: list):
+        """Store segments in simple format with compression detection."""
+        texts_key = f"{file_id}_texts"
+        
+        # Check if original data was compressed by trying to read it
+        original_compressed = self._is_original_data_compressed(file_id)
+        
+        # Serialize data
+        if ORJSON_AVAILABLE:
+            texts_bytes = orjson.dumps(text_segments, option=orjson.OPT_NON_STR_KEYS)
+        else:
+            texts_bytes = json.dumps(text_segments, ensure_ascii=False).encode('utf-8')
+        
+        # Apply compression if original was compressed
+        if original_compressed:
+            logger.debug(f"[UpdateTranslations] Applying compression to match original format")
+            texts_bytes = gzip.compress(texts_bytes)
+        
+        json_size = len(texts_bytes)
+        logger.debug(f"[UpdateTranslations] Storing simple format - Key: {texts_key}, Size: {json_size} bytes, Compressed: {original_compressed}")
+        self.session.storage.set(texts_key, texts_bytes)
+    
+    def _store_segments_batched(self, file_id: str, text_segments: list, original_batch_metadata: dict):
+        """Store segments in batched format to match original structure."""
+        batch_size = original_batch_metadata.get('batch_size', 5000)
+        total_segments = len(text_segments)
+        
+        logger.debug(f"[UpdateTranslations] Batching {total_segments} segments with size {batch_size}")
+        
+        # Split segments into batches
+        batches = []
+        for i in range(0, total_segments, batch_size):
+            batch = text_segments[i:i + batch_size]
+            batches.append(batch)
+        
+        batch_count = len(batches)
+        logger.debug(f"[UpdateTranslations] Created {batch_count} batches")
+        
+        # Store each batch with compression
+        for batch_index, batch_segments in enumerate(batches):
+            batch_key = f"{file_id}_texts_batch_{batch_index}"
+            
+            # Serialize with high performance
+            if ORJSON_AVAILABLE:
+                batch_bytes = orjson.dumps(batch_segments, option=orjson.OPT_NON_STR_KEYS)
+            else:
+                batch_bytes = json.dumps(batch_segments, ensure_ascii=False).encode('utf-8')
+            
+            # Compress the batch
+            batch_compressed = gzip.compress(batch_bytes)
+            
+            # Store compressed batch
+            self.session.storage.set(batch_key, batch_compressed)
+            logger.debug(f"[UpdateTranslations] Stored batch {batch_index}: {len(batch_segments)} segments, {len(batch_compressed)} bytes")
+        
+        # Update batch metadata with current information
+        batch_metadata = {
+            'batch_count': batch_count,
+            'batch_size': batch_size,
+            'total_segments': total_segments,
+            'updated_at': self._get_current_timestamp()
+        }
+        
+        # Store metadata with compression
+        if ORJSON_AVAILABLE:
+            metadata_bytes = orjson.dumps(batch_metadata, option=orjson.OPT_NON_STR_KEYS)
+        else:
+            metadata_bytes = json.dumps(batch_metadata, ensure_ascii=False).encode('utf-8')
+        
+        batch_meta_compressed = gzip.compress(metadata_bytes)
+        batch_meta_key = f"{file_id}_batch_metadata"
+        self.session.storage.set(batch_meta_key, batch_meta_compressed)
+        
+        logger.info(f"[UpdateTranslations] Batched storage complete: {batch_count} batches, {total_segments} total segments")
+    
+    def _is_original_data_compressed(self, file_id: str) -> bool:
+        """Check if the original data was stored with compression."""
+        try:
+            # Try to read the original data to detect compression
+            texts_key = f"{file_id}_texts"
+            original_data = self.session.storage.get(texts_key)
+            if not original_data:
+                return False  # No original data to check
+            
+            # Try to decompress - if it works, it was compressed
+            try:
+                gzip.decompress(original_data)
+                return True
+            except (gzip.BadGzipFile, OSError):
+                return False
+        except Exception:
+            return False  # Default to uncompressed if we can't determine    
     
     def _get_current_timestamp(self) -> str:
         """Get current timestamp in ISO format."""
         from datetime import datetime
         return datetime.now().isoformat()
-    
-    def _store_segments_batched(self, file_id: str, text_segments: list, batch_size: int = 50):
-        """Store text segments in compressed batches (consistent with extract_ooxml_text format)."""
-        import concurrent.futures
-        
-        total_size = 0
-        batch_count = (len(text_segments) + batch_size - 1) // batch_size  # Ceiling division
-        
-        logger.debug(f"[UpdateTranslations] Batched storage: {len(text_segments)} segments in {batch_count} batches of {batch_size}")
-        
-        # Use threading for parallel batch processing (consistent with extract_ooxml_text)
-        def store_batch(batch_index: int, batch_data: list) -> int:
-            batch_json = self._fast_json_encode(batch_data)
-            batch_compressed = gzip.compress(batch_json)
-            batch_key = f"{file_id}_texts_batch_{batch_index}"
-            self.session.storage.set(batch_key, batch_compressed)
-            
-            compression_ratio = (1 - len(batch_compressed) / len(batch_json)) * 100
-            logger.debug(f"[UpdateTranslations] Batch {batch_index}: {len(batch_json)}→{len(batch_compressed)} bytes ({compression_ratio:.1f}% reduction)")
-            return len(batch_compressed)
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = []
-            for i in range(0, len(text_segments), batch_size):
-                batch_index = i // batch_size
-                batch_data = text_segments[i:i + batch_size]
-                future = executor.submit(store_batch, batch_index, batch_data)
-                futures.append(future)
-            
-            # Collect results
-            for future in concurrent.futures.as_completed(futures):
-                total_size += future.result()
-        
-        # Update batch metadata to reflect new data
-        batch_metadata = {
-            'batch_count': batch_count,
-            'batch_size': batch_size,
-            'total_segments': len(text_segments),
-            'storage_format': 'batched_compressed'
-        }
-        batch_meta_json = self._fast_json_encode(batch_metadata)
-        batch_meta_compressed = gzip.compress(batch_meta_json)
-        batch_meta_key = f"{file_id}_batch_metadata"
-        self.session.storage.set(batch_meta_key, batch_meta_compressed)
-        total_size += len(batch_meta_compressed)
-        
-        logger.info(f"[UpdateTranslations] Batched storage completed: {batch_count} batches, {total_size} bytes total")
-    
-    def _store_segments_single(self, file_id: str, text_segments: list):
-        """Store text segments in single compressed key (consistent with extract_ooxml_text format)."""
-        segments_json = self._fast_json_encode(text_segments)
-        segments_compressed = gzip.compress(segments_json)
-        segments_key = f"{file_id}_texts"
-        self.session.storage.set(segments_key, segments_compressed)
-        
-        compression_ratio = (1 - len(segments_compressed) / len(segments_json)) * 100
-        logger.debug(f"[UpdateTranslations] Single-key compression: {len(segments_json)}→{len(segments_compressed)} bytes ({compression_ratio:.1f}% reduction)")
-        logger.info(f"[UpdateTranslations] Single-key compressed storage completed: {len(segments_compressed)} bytes")
-    
-    def _fast_json_encode(self, data) -> bytes:
-        """High-performance JSON encoding with orjson fallback."""
-        if ORJSON_AVAILABLE:
-            return orjson.dumps(data, option=orjson.OPT_NON_STR_KEYS)
-        else:
-            return json.dumps(data, ensure_ascii=False).encode('utf-8')
-    
     
     def _get_segment_mapping(self, file_id: str) -> dict:
         """读取segment映射关系，用于空格恢复，支持压缩格式。"""
@@ -635,3 +710,41 @@ class UpdateTranslationsTool(Tool):
         except Exception as e:
             logger.error(f"[UpdateTranslations] Error reading metadata: {str(e)}")
             return {}
+    
+    def _combine_chunks(self, chunks: list) -> str:
+        """
+        将分块的XML翻译结果合并为单个字符串进行处理。
+        
+        Args:
+            chunks: XML翻译分块列表
+            
+        Returns:
+            合并后的XML字符串
+        """
+        if not chunks:
+            return ""
+        
+        logger.debug(f"[UpdateTranslations] Combining {len(chunks)} translation chunks")
+        
+        try:
+            # 验证chunks是否为字符串列表
+            if not all(isinstance(chunk, str) for chunk in chunks):
+                logger.warning("[UpdateTranslations] Some chunks are not strings, converting to string")
+                chunks = [str(chunk) for chunk in chunks]
+            
+            # 合并所有chunks，使用换行符分隔
+            combined = '\n'.join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+            
+            # 计算统计信息
+            total_length = len(combined)
+            non_empty_chunks = len([chunk for chunk in chunks if chunk and chunk.strip()])
+            
+            logger.info(f"[UpdateTranslations] Chunks combined successfully - {non_empty_chunks}/{len(chunks)} non-empty chunks, {total_length} total characters")
+            logger.debug(f"[UpdateTranslations] Combined content preview: {combined[:200]}...")
+            
+            return combined
+            
+        except Exception as e:
+            logger.error(f"[UpdateTranslations] Error combining chunks: {str(e)}")
+            # 容错处理：返回空字符串
+            return ""

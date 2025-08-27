@@ -21,6 +21,61 @@ parameters:
       zh_Hans: "来自提取步骤的文件标识符"
     llm_description: "The file identifier from the extraction step"
     form: llm
+    
+  - name: output_format
+    type: select
+    required: false
+    default: "string"
+    form: form
+    label:
+      en_US: "Output Format"
+      zh_Hans: "输出格式"
+    human_description:
+      en_US: "Choose output format: string for single text block, array for chunked texts suitable for parallel translation"
+      zh_Hans: "选择输出格式：string为单个文本块，array为适合并行翻译的分块文本"
+    llm_description: "Output format selection: 'string' returns single XML text block, 'array' returns chunked XML blocks for parallel processing"
+    placeholder:
+      en_US: "Select output format"
+      zh_Hans: "选择输出格式"
+    options:
+      - value: "string"
+        label:
+          en_US: "Single String (Default)"
+          zh_Hans: "单个字符串（默认）"
+      - value: "array"
+        label:
+          en_US: "Array of Chunks"
+          zh_Hans: "分块数组"
+          
+  - name: chunk_size
+    type: number
+    required: false
+    default: 1500
+    form: form
+    label:
+      en_US: "Chunk Size"
+      zh_Hans: "块大小"
+    human_description:
+      en_US: "Maximum characters per chunk (only effective when output_format is 'array')"
+      zh_Hans: "每块最大字符数（仅在输出格式为'array'时生效）"
+    llm_description: "Maximum character count per chunk when using array output format"
+    min: 500
+    max: 5000
+      
+  - name: max_segments_per_chunk
+    type: number
+    required: false
+    default: 50
+    form: form
+    label:
+      en_US: "Max Segments per Chunk"
+      zh_Hans: "每块最大段落数"
+    human_description:
+      en_US: "Maximum XML segments per chunk (only effective when output_format is 'array')"
+      zh_Hans: "每块最大XML段落数（仅在输出格式为'array'时生效）"
+    llm_description: "Maximum number of XML segments per chunk when using array output format"
+    min: 10
+    max: 100
 extra:
   python:
     source: tools/get_translation_texts.py
@@ -35,10 +90,19 @@ output_schema:
       description: "The file processing identifier"
     original_texts:
       type: string
-      description: "All original texts formatted as XML segments with sequential IDs (<segment id=\"001\">text</segment>), preserving exact order for translation"
+      description: "All original texts formatted as XML segments with sequential IDs (<segment id=\"001\">text</segment>), preserving exact order for translation (when output_format is string)"
+    chunks:
+      type: array
+      description: "Array of XML text chunks for parallel translation (when output_format is array)"
+      items:
+        type: string
+        description: "XML chunk containing multiple segments"
     text_count:
       type: integer
       description: "Total number of text segments"
+    chunk_count:
+      type: integer
+      description: "Number of chunks created (when output_format is array)"
     preview:
       type: string
       description: "First 200 characters of the text collection"

@@ -1,4 +1,4 @@
-version: 0.0.3
+version: 0.0.4
 type: plugin
 author: ding113
 name: dify-ooxml-tool
@@ -27,7 +27,7 @@ plugins:
   tools:
     - provider/dify-ooxml-tool.yaml
 meta:
-  version: 0.0.1
+  version: 0.0.4
   arch:
     - amd64
     - arm64

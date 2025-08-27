@@ -10,9 +10,11 @@ OOXML Translation Tool is a Dify plugin that provides format-preserving translat
 
 - **Format-Preserving Translation**: Maintains all original formatting, styles, images, and layout
 - **Multi-Format Support**: Supports DOCX (Word), XLSX (Excel), and PPTX (PowerPoint) documents
+- **Chunked Translation Support**: Supports both single-string and chunked array translation workflows
 - **LLM Integration**: Optimized XML format prevents segment merging/splitting during translation
 - **Precise Reconstruction**: Uses exact XML location tracking for surgical text replacement
 - **Intelligent Space Handling**: Preserves whitespace and formatting nuances
+- **Iteration Node Compatible**: Works seamlessly with Dify iteration nodes for parallel processing
 
 ## Tools Overview
 
@@ -21,9 +23,9 @@ This plugin provides 4 tools that work together in a translation pipeline:
 | Tool | Purpose | Input | Output |
 |------|---------|-------|--------|
 | `extract_ooxml_text` | Extract text from document | OOXML file + file_id | Text segments with metadata |
-| `get_translation_texts` | Format text for LLM | file_id | XML-formatted segments |
+| `get_translation_texts` | Format text for LLM | file_id + format options | XML-formatted segments (string/array) |
 | `update_translations` | Update with LLM results | file_id + translations | Updated segments |
-| `rebuild_ooxml_document` | Generate final document | file_id | Translated document file |
+| `rebuild_ooxml_document` | Generate final document | file_id + input_file | Translated document file |
 
 ## Tool Parameters
 
@@ -36,16 +38,19 @@ This plugin provides 4 tools that work together in a translation pipeline:
 
 ### 2. Get Translation Texts Tool
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `file_id` | string | Yes | File identifier from extraction step |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_id` | string | Yes | - | File identifier from extraction step |
+| `output_format` | select | No | "string" | Output format: "string" for single text block, "array" for chunked texts |
+| `chunk_size` | number | No | 1500 | Maximum characters per chunk (when output_format="array") |
+| `max_segments_per_chunk` | number | No | 50 | Maximum XML segments per chunk (when output_format="array") |
 
 ### 3. Update Translations Tool
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file_id` | string | Yes | File identifier |
-| `translated_texts` | string | Yes | XML-formatted translations from LLM |
+| `translated_texts` | string | No | XML-formatted translations from LLM (supports both single string and array formats) |
 
 ### 4. Rebuild OOXML Document Tool
 
@@ -93,6 +98,7 @@ Create a workflow with the following node sequence:
    ↓
 3. Get Translation Texts Tool  
    - file_id: {{#extract.file_id}}
+   - output_format: "string" (default)
    ↓
 4. LLM Translation Node
    - prompt: "Translate to Spanish, maintain XML format: {{#get_texts.original_texts}}"
@@ -103,8 +109,48 @@ Create a workflow with the following node sequence:
    ↓
 6. Rebuild Document Tool
    - file_id: {{#extract.file_id}}
+   - input_file: {{#start.files[0]}}
    ↓
 7. Output Node (End)
+   - Download: {{#rebuild.download_url}}
+```
+
+### Chunked Translation Workflow (For Large Documents)
+
+For large documents or parallel processing using iteration nodes:
+
+```yaml
+1. File Upload Node (Start)
+   ↓
+2. Extract OOXML Text Tool
+   - input_file: {{#start.files[0]}}
+   - file_id: "doc_{{#start.timestamp}}"
+   ↓
+3. Get Translation Texts Tool  
+   - file_id: {{#extract.file_id}}
+   - output_format: "array"
+   - chunk_size: 1500
+   - max_segments_per_chunk: 50
+   ↓
+4. Iteration Node
+   - Input Array: {{#get_texts.chunks}}
+   - Parallel Execution: Enabled
+   ↓
+5. LLM Translation Node (Inside Iteration)
+   - prompt: "Translate to Spanish, maintain XML format: {{#iteration.item}}"
+   ↓
+6. Iteration End
+   - Collect all translations into array
+   ↓
+7. Update Translations Tool
+   - file_id: {{#extract.file_id}}
+   - translated_texts: {{#iteration.results}} (array format)
+   ↓
+8. Rebuild Document Tool
+   - file_id: {{#extract.file_id}}
+   - input_file: {{#start.files[0]}}
+   ↓
+9. Output Node (End)
    - Download: {{#rebuild.download_url}}
 ```
 
