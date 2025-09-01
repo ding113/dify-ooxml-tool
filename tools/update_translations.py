@@ -1,18 +1,10 @@
 import json
-import gzip
 import logging
 import xml.etree.ElementTree as ET
 import re
 import ast
 from collections.abc import Generator
 from typing import Any
-
-# Use orjson for high-performance JSON deserialization, fallback to standard json
-try:
-    import orjson
-    ORJSON_AVAILABLE = True
-except ImportError:
-    ORJSON_AVAILABLE = False
 
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
@@ -112,7 +104,7 @@ class UpdateTranslationsTool(Tool):
             text_segments.sort(key=lambda x: x.get('sequence_id', 0))
             logger.debug(f"[UpdateTranslations] Sorting completed - First segment ID: {text_segments[0].get('sequence_id', 'N/A') if text_segments else 'N/A'}")
             
-            # Parse the XML formatted translated texts
+            # 解析XML格式的翻译结果，处理重叠冲突
             logger.debug(f"[UpdateTranslations] Parsing XML formatted translations")
             translation_dict = self._parse_xml_translations(combined_translations)
             logger.info(f"[UpdateTranslations] Found {len(translation_dict)} translation segments")
@@ -122,25 +114,14 @@ class UpdateTranslationsTool(Tool):
                 sample_items = list(translation_dict.items())[:3]
                 logger.debug(f"[UpdateTranslations] Sample translations: {[(k, v[:50] + '...' if len(v) > 50 else v) for k, v in sample_items]}")
             
-            # 读取映射关系（用于新格式的空格恢复）
-            logger.debug(f"[UpdateTranslations] Reading segment mapping for space recovery")
+            # 读取映射关系
+            logger.debug(f"[UpdateTranslations] Reading segment mapping")
             segment_mapping = self._get_segment_mapping(file_id)
-            reverse_mapping = {v: k for k, v in segment_mapping.items()} if segment_mapping else {}
             logger.debug(f"[UpdateTranslations] Mapping loaded - {len(segment_mapping)} mappings found")
             
             # 统计预期的翻译数量
-            if segment_mapping:
-                # 新格式：使用映射关系
-                expected_translations = len(segment_mapping)
-                logger.info(f"[UpdateTranslations] Using new mapping format - Expected translations: {expected_translations}")
-            else:
-                # 旧格式：兼容处理
-                non_empty_indices = []
-                for i, segment in enumerate(text_segments):
-                    if segment.get('original_text', '').strip():
-                        non_empty_indices.append(i)
-                expected_translations = len(non_empty_indices)
-                logger.info(f"[UpdateTranslations] Using legacy format - Expected translations: {expected_translations}")
+            expected_translations = len(segment_mapping) if segment_mapping else len(text_segments)
+            logger.info(f"[UpdateTranslations] Expected translations: {expected_translations}")
             
             # 检查翻译数量匹配
             actual_translations = len(translation_dict)
@@ -153,74 +134,45 @@ class UpdateTranslationsTool(Tool):
                     f"Expected {expected_translations} translations, got {actual_translations}"
                 )
             
-            # 智能更新翻译，实现空格恢复
-            logger.info(f"[UpdateTranslations] Starting intelligent translation updates with space recovery")
+            # 简化翻译更新：直接使用翻译结果，不做任何空格处理
+            logger.info(f"[UpdateTranslations] Starting simplified translation updates")
             updated_count = 0
             skipped_count = 0
-            space_recovered_count = 0
             
             for i, segment in enumerate(text_segments):
-                # 获取空格信息（新格式）或兼容处理（旧格式）
-                space_info = segment.get('space_info', {})
-                
-                if space_info:
-                    # 新格式：使用space_info
-                    has_content = space_info.get('has_content', True)
-                    is_pure_space = space_info.get('is_pure_space', False)
-                    raw_text = space_info.get('raw_text', '')
-                    leading_spaces = space_info.get('leading_spaces', 0)
-                    trailing_spaces = space_info.get('trailing_spaces', 0)
-                    
-                    if is_pure_space:
-                        # 纯空格段落：直接使用原始文本
-                        segment['translated_text'] = raw_text
-                        space_recovered_count += 1
-                        logger.debug(f"[UpdateTranslations] Space recovered at index {i}: {repr(raw_text)}") if space_recovered_count <= 3 else None
-                        continue
-                    elif has_content and str(i) in segment_mapping:
-                        # 有内容的段落：查找翻译并恢复空格
-                        xml_id = segment_mapping[str(i)]
-                        if xml_id in translation_dict:
-                            translation_text = translation_dict[xml_id].strip()
-                            if translation_text:
-                                # 恢复前后空格
-                                leading = ' ' * leading_spaces
-                                trailing = ' ' * trailing_spaces
-                                full_translation = leading + translation_text + trailing
-                                segment['translated_text'] = full_translation
-                                updated_count += 1
-                                logger.debug(f"[UpdateTranslations] Updated with spaces - index {i}, xml_id {xml_id}: {repr(full_translation[:50])}") if updated_count <= 5 else None
-                            else:
-                                skipped_count += 1
-                                logger.debug(f"[UpdateTranslations] Skipped empty translation for index {i}, xml_id {xml_id}")
+                if str(i) in segment_mapping:
+                    xml_id = segment_mapping[str(i)]
+                    if xml_id in translation_dict:
+                        translation_text = translation_dict[xml_id]
+                        if translation_text:
+                            # 关键简化：直接使用翻译结果，不做任何空格处理
+                            segment['translated_text'] = translation_text
+                            updated_count += 1
+                            logger.debug(f"[UpdateTranslations] Updated index {i}, xml_id {xml_id}: {translation_text[:50]}...") if updated_count <= 5 else None
                         else:
                             skipped_count += 1
-                            logger.warning(f"[UpdateTranslations] Missing translation for index {i}, xml_id {xml_id}")
-                    elif has_content:
-                        # 有内容但未找到映射：使用原始文本
-                        segment['translated_text'] = raw_text
+                            logger.debug(f"[UpdateTranslations] Skipped empty translation for index {i}, xml_id {xml_id}")
+                    else:
                         skipped_count += 1
-                        logger.debug(f"[UpdateTranslations] No mapping found for content segment at index {i}, using original")
+                        logger.warning(f"[UpdateTranslations] Missing translation for index {i}, xml_id {xml_id}")
+                elif segment_mapping:
+                    # 有映射但当前segment不在映射中，跳过
+                    skipped_count += 1
+                    logger.debug(f"[UpdateTranslations] No mapping found for segment at index {i}")
                 else:
-                    # 旧格式：兼容处理
-                    original_text = segment.get('original_text', '').strip()
-                    if original_text:
-                        # 寻找对应的翻译（使用简单的顺序映射）
-                        xml_id_index = len([s for j, s in enumerate(text_segments[:i]) if s.get('original_text', '').strip()])
-                        xml_id = f"{xml_id_index + 1:03d}"
-                        
-                        if xml_id in translation_dict:
-                            translation_text = translation_dict[xml_id].strip()
-                            if translation_text:
-                                segment['translated_text'] = translation_text
-                                updated_count += 1
-                                logger.debug(f"[UpdateTranslations] Legacy update - index {i}, xml_id {xml_id}: {translation_text[:50]}...") if updated_count <= 5 else None
-                            else:
-                                skipped_count += 1
+                    # 兼容旧格式：没有映射关系时使用简单的顺序映射
+                    xml_id = f"{i + 1:03d}"
+                    if xml_id in translation_dict:
+                        translation_text = translation_dict[xml_id]
+                        if translation_text:
+                            segment['translated_text'] = translation_text
+                            updated_count += 1
+                            logger.debug(f"[UpdateTranslations] Legacy update - index {i}, xml_id {xml_id}: {translation_text[:50]}...") if updated_count <= 5 else None
                         else:
                             skipped_count += 1
-                            logger.warning(f"[UpdateTranslations] Legacy mode - missing translation for index {i}, xml_id {xml_id}")
-                    # 空白段落在旧格式中保持不变
+                    else:
+                        skipped_count += 1
+                        logger.warning(f"[UpdateTranslations] Legacy mode - missing translation for index {i}, xml_id {xml_id}")
             
             # Store updated text segments
             logger.info(f"[UpdateTranslations] Storing updated text segments")
@@ -229,9 +181,9 @@ class UpdateTranslationsTool(Tool):
             storage_end_time = self._get_current_timestamp()
             logger.debug(f"[UpdateTranslations] Storage completed - Start: {storage_start_time}, End: {storage_end_time}")
             
-            logger.info(f"[UpdateTranslations] Update completed successfully - Updated: {updated_count}, Spaces recovered: {space_recovered_count}, Skipped: {skipped_count}, Mismatch: {mismatch_warning}")
+            logger.info(f"[UpdateTranslations] Update completed successfully - Updated: {updated_count}, Skipped: {skipped_count}, Mismatch: {mismatch_warning}")
             yield self.create_text_message(
-                f"Updated {updated_count} translations, recovered {space_recovered_count} space segments, skipped {skipped_count} entries"
+                f"Updated {updated_count} translations, skipped {skipped_count} entries"
             )
             
             # Return detailed results
@@ -239,12 +191,11 @@ class UpdateTranslationsTool(Tool):
                 "success": True,
                 "file_id": file_id,
                 "updated_count": updated_count,
-                "space_recovered_count": space_recovered_count,
                 "skipped_count": skipped_count,
                 "mismatch_warning": mismatch_warning,
                 "chunks_processed": chunks_processed,
                 "input_format": input_format,
-                "message": f"Successfully updated {updated_count} translations and recovered {space_recovered_count} space segments using {input_format} input"
+                "message": f"Successfully updated {updated_count} translations using {input_format} input"
             }
             
             yield self.create_json_message(result)
@@ -300,6 +251,11 @@ class UpdateTranslationsTool(Tool):
                     logger.warning(f"[UpdateTranslations] Invalid segment: id={segment_id}, text={text_content[:50] if text_content else 'empty'}")
             
             logger.info(f"[UpdateTranslations] XML parsing completed successfully - {len(translation_dict)} valid translations")
+            
+            # 处理重叠ID冲突：后面的翻译优先
+            translation_dict = self._resolve_overlap_conflicts(translation_dict)
+            logger.debug(f"[UpdateTranslations] Overlap conflicts resolved - Final count: {len(translation_dict)}")
+            
             return translation_dict
             
         except ET.ParseError as e:
@@ -400,15 +356,9 @@ class UpdateTranslationsTool(Tool):
             return {}
     
     def _get_text_segments(self, file_id: str) -> list:
-        """Get text segments from persistent storage with compression and batch support."""
+        """Get text segments from persistent storage with simplified logic."""
         logger.debug(f"[UpdateTranslations] Reading text segments for file_id: {file_id}")
         try:
-            # First, check if we have batched storage
-            batch_metadata = self._get_batch_metadata(file_id)
-            if batch_metadata:
-                return self._get_segments_batched(file_id, batch_metadata)
-            
-            # Try single storage (both compressed and legacy)
             texts_key = f"{file_id}_texts"
             logger.debug(f"[UpdateTranslations] Fetching text segments with key: {texts_key}")
             texts_data = self.session.storage.get(texts_key)
@@ -416,18 +366,12 @@ class UpdateTranslationsTool(Tool):
                 logger.warning(f"[UpdateTranslations] No text segments found for key: {texts_key}")
                 return []
             
-            # Try compressed format first (new format)
-            try:
-                decompressed_data = gzip.decompress(texts_data)
-                segments = self._fast_json_decode(decompressed_data)
-                logger.debug(f"[UpdateTranslations] Compressed text segments loaded successfully - Count: {len(segments)}")
-            except (gzip.BadGzipFile, OSError):
-                # Fallback to legacy format (uncompressed)
+            # Parse JSON segments directly
+            if isinstance(texts_data, bytes):
                 segments = json.loads(texts_data.decode('utf-8'))
-                logger.debug(f"[UpdateTranslations] Legacy text segments loaded successfully - Count: {len(segments)}")
-            
-            # Restore namespace maps if optimized format is detected
-            segments = self._restore_optimized_data(segments, file_id)
+            else:
+                segments = json.loads(texts_data)
+            logger.debug(f"[UpdateTranslations] Text segments loaded successfully - Count: {len(segments)}")
             
             # Log translation status for debugging
             translated_count = sum(1 for seg in segments if seg.get('translated_text', '').strip())
@@ -439,20 +383,12 @@ class UpdateTranslationsTool(Tool):
             return []
     
     def _store_text_segments(self, file_id: str, text_segments: list):
-        """Store updated text segments to persistent storage, preserving original format."""
+        """Store updated text segments to persistent storage with simplified logic."""
         logger.debug(f"[UpdateTranslations] Storing text segments for file_id: {file_id}, count: {len(text_segments)}")
         try:
-            # Check if the original data was stored in batched format
-            batch_metadata = self._get_batch_metadata(file_id)
-            
-            if batch_metadata:
-                # Original data was stored in batched format - preserve this format
-                logger.info(f"[UpdateTranslations] Storing in batched format to preserve original structure")
-                self._store_segments_batched(file_id, text_segments, batch_metadata)
-            else:
-                # Original data was stored in simple format - use simple format but check compression
-                logger.info(f"[UpdateTranslations] Storing in simple format")
-                self._store_segments_simple(file_id, text_segments)
+            # Store segments directly with proper bytes encoding
+            texts_key = f"{file_id}_texts"
+            self.session.storage.set(texts_key, json.dumps(text_segments, ensure_ascii=False).encode('utf-8'))
             
             # Verify storage by counting translations
             translated_count = sum(1 for seg in text_segments if seg.get('translated_text', '').strip())
@@ -463,98 +399,8 @@ class UpdateTranslationsTool(Tool):
             logger.debug(f"[UpdateTranslations] Storage error details - segments_count: {len(text_segments)}, file_id: {file_id}")
             raise Exception(f"Failed to store updated text segments: {str(e)}")
     
-    def _store_segments_simple(self, file_id: str, text_segments: list):
-        """Store segments in simple format with compression detection."""
-        texts_key = f"{file_id}_texts"
-        
-        # Check if original data was compressed by trying to read it
-        original_compressed = self._is_original_data_compressed(file_id)
-        
-        # Serialize data
-        if ORJSON_AVAILABLE:
-            texts_bytes = orjson.dumps(text_segments, option=orjson.OPT_NON_STR_KEYS)
-        else:
-            texts_bytes = json.dumps(text_segments, ensure_ascii=False).encode('utf-8')
-        
-        # Apply compression if original was compressed
-        if original_compressed:
-            logger.debug(f"[UpdateTranslations] Applying compression to match original format")
-            texts_bytes = gzip.compress(texts_bytes)
-        
-        json_size = len(texts_bytes)
-        logger.debug(f"[UpdateTranslations] Storing simple format - Key: {texts_key}, Size: {json_size} bytes, Compressed: {original_compressed}")
-        self.session.storage.set(texts_key, texts_bytes)
     
-    def _store_segments_batched(self, file_id: str, text_segments: list, original_batch_metadata: dict):
-        """Store segments in batched format to match original structure."""
-        batch_size = original_batch_metadata.get('batch_size', 5000)
-        total_segments = len(text_segments)
-        
-        logger.debug(f"[UpdateTranslations] Batching {total_segments} segments with size {batch_size}")
-        
-        # Split segments into batches
-        batches = []
-        for i in range(0, total_segments, batch_size):
-            batch = text_segments[i:i + batch_size]
-            batches.append(batch)
-        
-        batch_count = len(batches)
-        logger.debug(f"[UpdateTranslations] Created {batch_count} batches")
-        
-        # Store each batch with compression
-        for batch_index, batch_segments in enumerate(batches):
-            batch_key = f"{file_id}_texts_batch_{batch_index}"
-            
-            # Serialize with high performance
-            if ORJSON_AVAILABLE:
-                batch_bytes = orjson.dumps(batch_segments, option=orjson.OPT_NON_STR_KEYS)
-            else:
-                batch_bytes = json.dumps(batch_segments, ensure_ascii=False).encode('utf-8')
-            
-            # Compress the batch
-            batch_compressed = gzip.compress(batch_bytes)
-            
-            # Store compressed batch
-            self.session.storage.set(batch_key, batch_compressed)
-            logger.debug(f"[UpdateTranslations] Stored batch {batch_index}: {len(batch_segments)} segments, {len(batch_compressed)} bytes")
-        
-        # Update batch metadata with current information
-        batch_metadata = {
-            'batch_count': batch_count,
-            'batch_size': batch_size,
-            'total_segments': total_segments,
-            'updated_at': self._get_current_timestamp()
-        }
-        
-        # Store metadata with compression
-        if ORJSON_AVAILABLE:
-            metadata_bytes = orjson.dumps(batch_metadata, option=orjson.OPT_NON_STR_KEYS)
-        else:
-            metadata_bytes = json.dumps(batch_metadata, ensure_ascii=False).encode('utf-8')
-        
-        batch_meta_compressed = gzip.compress(metadata_bytes)
-        batch_meta_key = f"{file_id}_batch_metadata"
-        self.session.storage.set(batch_meta_key, batch_meta_compressed)
-        
-        logger.info(f"[UpdateTranslations] Batched storage complete: {batch_count} batches, {total_segments} total segments")
     
-    def _is_original_data_compressed(self, file_id: str) -> bool:
-        """Check if the original data was stored with compression."""
-        try:
-            # Try to read the original data to detect compression
-            texts_key = f"{file_id}_texts"
-            original_data = self.session.storage.get(texts_key)
-            if not original_data:
-                return False  # No original data to check
-            
-            # Try to decompress - if it works, it was compressed
-            try:
-                gzip.decompress(original_data)
-                return True
-            except (gzip.BadGzipFile, OSError):
-                return False
-        except Exception:
-            return False  # Default to uncompressed if we can't determine    
     
     def _get_current_timestamp(self) -> str:
         """Get current timestamp in ISO format."""
@@ -594,99 +440,11 @@ class UpdateTranslationsTool(Tool):
         else:
             return json.loads(data.decode('utf-8'))
     
-    def _get_batch_metadata(self, file_id: str) -> dict:
-        """Get batch metadata for batched storage format."""
-        try:
-            batch_meta_key = f"{file_id}_batch_metadata"
-            batch_meta_data = self.session.storage.get(batch_meta_key)
-            if not batch_meta_data:
-                return {}
-            
-            # Try compressed format first
-            try:
-                decompressed_data = gzip.decompress(batch_meta_data)
-                return self._fast_json_decode(decompressed_data)
-            except (gzip.BadGzipFile, OSError):
-                return self._fast_json_decode(batch_meta_data)
-        except Exception as e:
-            logger.debug(f"[UpdateTranslations] No batch metadata found: {str(e)}")
-            return {}
     
-    def _get_segments_batched(self, file_id: str, batch_metadata: dict) -> list:
-        """Retrieve text segments from batched storage format."""
-        batch_count = batch_metadata.get('batch_count', 0)
-        total_segments = batch_metadata.get('total_segments', 0)
-        
-        logger.debug(f"[UpdateTranslations] Loading batched segments: {batch_count} batches, {total_segments} total segments")
-        
-        all_segments = []
-        for batch_index in range(batch_count):
-            batch_key = f"{file_id}_texts_batch_{batch_index}"
-            batch_data = self.session.storage.get(batch_key)
-            
-            if batch_data:
-                try:
-                    # Try compressed format first
-                    try:
-                        decompressed_data = gzip.decompress(batch_data)
-                        batch_segments = self._fast_json_decode(decompressed_data)
-                    except (gzip.BadGzipFile, OSError):
-                        batch_segments = self._fast_json_decode(batch_data)
-                    
-                    all_segments.extend(batch_segments)
-                    logger.debug(f"[UpdateTranslations] Loaded batch {batch_index}: {len(batch_segments)} segments")
-                except Exception as e:
-                    logger.warning(f"[UpdateTranslations] Failed to load batch {batch_index}: {str(e)}")
-            else:
-                logger.warning(f"[UpdateTranslations] Batch {batch_index} not found")
-        
-        logger.info(f"[UpdateTranslations] Batched loading complete: {len(all_segments)}/{total_segments} segments loaded")
-        
-        # Restore namespace maps if optimized format is detected
-        return self._restore_optimized_data(all_segments, file_id)
     
-    def _restore_optimized_data(self, segments: list, file_id: str) -> list:
-        """Restore namespace maps from optimized format using metadata registry."""
-        if not segments:
-            return segments
-        
-        # Check if any segment has namespace_ref (indicating optimized format)
-        has_optimization = any(
-            seg.get('xml_location', {}).get('namespace_ref') is not None
-            for seg in segments
-        )
-        
-        if not has_optimization:
-            logger.debug("[UpdateTranslations] No optimization detected, segments unchanged")
-            return segments
-        
-        # Get namespace registry from metadata
-        metadata = self._get_metadata(file_id)
-        namespace_registry = metadata.get('namespace_registry', {})
-        
-        if not namespace_registry:
-            logger.warning("[UpdateTranslations] Optimized format detected but no namespace registry found")
-            return segments
-        
-        # Restore namespace maps
-        restored_segments = []
-        for segment in segments:
-            restored_segment = segment.copy()
-            xml_location = restored_segment.get('xml_location', {})
-            namespace_ref = xml_location.get('namespace_ref')
-            
-            if namespace_ref and namespace_ref in namespace_registry:
-                # Restore the full namespace_map
-                xml_location['namespace_map'] = namespace_registry[namespace_ref]
-                xml_location.pop('namespace_ref', None)  # Remove the reference
-            
-            restored_segments.append(restored_segment)
-        
-        logger.debug(f"[UpdateTranslations] Data restoration complete: {len(namespace_registry)} namespace patterns restored")
-        return restored_segments
     
     def _get_metadata(self, file_id: str) -> dict:
-        """Get metadata from persistent storage with compression support."""
+        """Get metadata from persistent storage with simplified logic."""
         logger.debug(f"[UpdateTranslations] Reading metadata for file_id: {file_id}")
         try:
             metadata_key = f"{file_id}_metadata"
@@ -696,15 +454,12 @@ class UpdateTranslationsTool(Tool):
                 logger.warning(f"[UpdateTranslations] No metadata found for key: {metadata_key}")
                 return {}
             
-            # Try compressed format first (new format)
-            try:
-                decompressed_data = gzip.decompress(metadata_data)
-                metadata = self._fast_json_decode(decompressed_data)
-                logger.debug(f"[UpdateTranslations] Compressed metadata loaded successfully - Keys: {list(metadata.keys())}")
-            except (gzip.BadGzipFile, OSError):
-                # Fallback to legacy format (uncompressed)
+            # Parse JSON metadata directly
+            if isinstance(metadata_data, bytes):
                 metadata = json.loads(metadata_data.decode('utf-8'))
-                logger.debug(f"[UpdateTranslations] Legacy metadata loaded successfully - Keys: {list(metadata.keys())}")
+            else:
+                metadata = json.loads(metadata_data)
+            logger.debug(f"[UpdateTranslations] Metadata loaded successfully - Keys: {list(metadata.keys())}")
             
             return metadata
         except Exception as e:
@@ -748,3 +503,46 @@ class UpdateTranslationsTool(Tool):
             logger.error(f"[UpdateTranslations] Error combining chunks: {str(e)}")
             # 容错处理：返回空字符串
             return ""
+    
+    def _resolve_overlap_conflicts(self, translation_dict: dict) -> dict:
+        """
+        解决重叠分块导致的ID冲突，按照'后一部分优先'原则。
+        
+        Args:
+            translation_dict: 原始翻译字典，可能包含重复ID
+            
+        Returns:
+            解决冲突后的翻译字典
+        """
+        if not translation_dict:
+            return translation_dict
+        
+        # 检查是否有重复的ID（重叠分块导致）
+        id_counts = {}
+        for segment_id in translation_dict.keys():
+            id_counts[segment_id] = id_counts.get(segment_id, 0) + 1
+        
+        duplicates = [id for id, count in id_counts.items() if count > 1]
+        
+        if not duplicates:
+            logger.debug(f"[UpdateTranslations] No overlap conflicts found")
+            return translation_dict
+        
+        logger.info(f"[UpdateTranslations] Found {len(duplicates)} overlapping IDs: {duplicates[:5]}...")
+        
+        # 由于字典的特性，后面的值会自动覆盖前面的值
+        # 这正好符合"后一部分优先"的原则
+        resolved_dict = {}
+        conflict_count = 0
+        
+        for segment_id, translation in translation_dict.items():
+            if segment_id in duplicates:
+                if segment_id in resolved_dict:
+                    conflict_count += 1
+                    logger.debug(f"[UpdateTranslations] Overlap resolved for ID {segment_id}: using later translation")
+                resolved_dict[segment_id] = translation  # 后面的翻译覆盖前面的
+            else:
+                resolved_dict[segment_id] = translation
+        
+        logger.info(f"[UpdateTranslations] Overlap conflicts resolved - {conflict_count} conflicts resolved using later translations")
+        return resolved_dict

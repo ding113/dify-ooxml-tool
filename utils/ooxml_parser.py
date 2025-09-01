@@ -120,19 +120,22 @@ class OOXMLParser:
         return self._create_error_response("Maximum retry attempts exceeded", file_type)
     
     def _parse_docx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
-        """Parse DOCX file and extract all text segments."""
+        """Parse DOCX file and extract all text segments with optimized file list caching."""
         text_segments = []
         supported_elements = set()
         
+        # Cache the file list to avoid multiple namelist() calls
+        file_list = zip_file.namelist()
+        
         # Main document content - word/document.xml
-        if "word/document.xml" in zip_file.namelist():
+        if "word/document.xml" in file_list:
             segments = self._extract_docx_document_text(zip_file, "word/document.xml")
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("w:t")
         
         # Headers and footers
-        for filename in zip_file.namelist():
+        for filename in file_list:
             if filename.startswith("word/header") and filename.endswith(".xml"):
                 segments = self._extract_docx_document_text(zip_file, filename)
                 text_segments.extend(segments)
@@ -145,20 +148,20 @@ class OOXMLParser:
                     supported_elements.add("footer_w:t")
         
         # Comments
-        if "word/comments.xml" in zip_file.namelist():
+        if "word/comments.xml" in file_list:
             segments = self._extract_docx_document_text(zip_file, "word/comments.xml")
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("comment_w:t")
         
         # Footnotes and endnotes
-        if "word/footnotes.xml" in zip_file.namelist():
+        if "word/footnotes.xml" in file_list:
             segments = self._extract_docx_document_text(zip_file, "word/footnotes.xml")
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("footnote_w:t")
         
-        if "word/endnotes.xml" in zip_file.namelist():
+        if "word/endnotes.xml" in file_list:
             segments = self._extract_docx_document_text(zip_file, "word/endnotes.xml")
             text_segments.extend(segments)
             if segments:
@@ -183,7 +186,11 @@ class OOXMLParser:
             
             for idx, text_elem in enumerate(text_elements):
                 text_content = text_elem.text or ""
-                # 保留所有文本元素，包括纯空格内容
+                
+                # 第一步过滤：跳过纯空字符串，统一ID分配
+                if not text_content.strip():
+                    continue
+                
                 # Get parent run element for context
                 run_elem = text_elem.getparent()
                 paragraph_elem = run_elem.getparent() if run_elem is not None else None
@@ -191,13 +198,10 @@ class OOXMLParser:
                 # Create XPath for precise location
                 xpath = self._create_element_xpath(text_elem)
                 
-                # 分析空格信息
-                space_info = self._analyze_text_spaces(text_content)
-                
                 text_segments.append({
                     "sequence_id": len(text_segments),
                     "text_id": f"{xml_path}_{idx}",
-                    "original_text": text_content.strip(),  # 存储纯文本内容
+                    "original_text": text_content,  # 保留原始文本，包括前后空格
                     "translated_text": "",
                     "xml_location": {
                         "xml_file_path": xml_path,
@@ -208,8 +212,7 @@ class OOXMLParser:
                     "text_metadata": {
                         "char_count": len(text_content),
                         "is_rich_text": self._has_formatting(run_elem) if run_elem is not None else False
-                    },
-                    "space_info": space_info
+                    }
                 })
             
             return text_segments
@@ -218,19 +221,22 @@ class OOXMLParser:
             return []
     
     def _parse_xlsx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
-        """Parse XLSX file and extract all text segments."""
+        """Parse XLSX file and extract all text segments with optimized file list caching."""
         text_segments = []
         supported_elements = set()
         
+        # Cache the file list to avoid multiple namelist() calls
+        file_list = zip_file.namelist()
+        
         # Shared strings table - xl/sharedStrings.xml
-        if "xl/sharedStrings.xml" in zip_file.namelist():
+        if "xl/sharedStrings.xml" in file_list:
             segments = self._extract_xlsx_shared_strings(zip_file)
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("si")
         
         # Direct cell text in worksheets (rare case)
-        for filename in zip_file.namelist():
+        for filename in file_list:
             if filename.startswith("xl/worksheets/") and filename.endswith(".xml"):
                 segments = self._extract_xlsx_worksheet_text(zip_file, filename)
                 text_segments.extend(segments)
@@ -292,10 +298,10 @@ class OOXMLParser:
                 
                 for t_idx, t_elem in enumerate(t_elements):
                     text_content = t_elem.text or ""
-                    # 保留所有文本元素，包括纯空格内容
                     
-                    # 分析空格信息
-                    space_info = self._analyze_text_spaces(text_content)
+                    # 第一步过滤：跳过纯空字符串
+                    if not text_content.strip():
+                        continue
                     
                     # Build XPath based on namespace strategy used
                     if using_excel_ns is True:
@@ -308,7 +314,7 @@ class OOXMLParser:
                     text_segments.append({
                         "sequence_id": len(text_segments),
                         "text_id": f"shared_string_{si_idx}_{t_idx}",
-                        "original_text": text_content.strip(),  # 存储纯文本内容
+                        "original_text": text_content,  # 保留原始文本，包括前后空格
                         "translated_text": "",
                         "xml_location": {
                             "xml_file_path": "xl/sharedStrings.xml",
@@ -320,8 +326,7 @@ class OOXMLParser:
                         "text_metadata": {
                             "char_count": len(text_content),
                             "is_rich_text": len(si_elem.xpath(".//r")) > 0  # Has rich text runs
-                        },
-                        "space_info": space_info
+                        }
                     })
             
             return text_segments
@@ -373,13 +378,10 @@ class OOXMLParser:
                 if text_content.strip() and not text_content.replace('.', '').replace('-', '').replace('+', '').isdigit():
                     xpath = self._create_element_xpath(cell_elem)
                     
-                    # 分析空格信息
-                    space_info = self._analyze_text_spaces(text_content)
-                    
                     text_segments.append({
                         "sequence_id": len(text_segments),
                         "text_id": f"{xml_path}_{idx}",
-                        "original_text": text_content.strip(),  # 存储纯文本内容
+                        "original_text": text_content,  # 保留原始文本，包括前后空格
                         "translated_text": "",
                         "xml_location": {
                             "xml_file_path": xml_path,
@@ -390,8 +392,7 @@ class OOXMLParser:
                         "text_metadata": {
                             "char_count": len(text_content),
                             "is_rich_text": False
-                        },
-                        "space_info": space_info
+                        }
                     })
             
             self.logger.info(f"Extracted {len(text_segments)} text segments from {xml_path}")
@@ -402,12 +403,15 @@ class OOXMLParser:
             return []
     
     def _parse_pptx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
-        """Parse PPTX file and extract all text segments."""
+        """Parse PPTX file and extract all text segments with optimized file list caching."""
         text_segments = []
         supported_elements = set()
         
+        # Cache the file list to avoid multiple namelist() calls
+        file_list = zip_file.namelist()
+        
         # Slide content
-        for filename in zip_file.namelist():
+        for filename in file_list:
             if filename.startswith("ppt/slides/slide") and filename.endswith(".xml"):
                 segments = self._extract_pptx_slide_text(zip_file, filename)
                 text_segments.extend(segments)
@@ -415,7 +419,7 @@ class OOXMLParser:
                     supported_elements.add("slide_a:t")
         
         # Speaker notes
-        for filename in zip_file.namelist():
+        for filename in file_list:
             if filename.startswith("ppt/notesSlides/notesSlide") and filename.endswith(".xml"):
                 segments = self._extract_pptx_slide_text(zip_file, filename)
                 text_segments.extend(segments)
@@ -423,7 +427,7 @@ class OOXMLParser:
                     supported_elements.add("notes_a:t")
         
         # Comments
-        for filename in zip_file.namelist():
+        for filename in file_list:
             if filename.startswith("ppt/comments/comment") and filename.endswith(".xml"):
                 segments = self._extract_pptx_slide_text(zip_file, filename)
                 text_segments.extend(segments)
@@ -453,7 +457,11 @@ class OOXMLParser:
             
             for idx, text_elem in enumerate(text_elements):
                 text_content = text_elem.text or ""
-                # 保留所有文本元素，包括纯空格内容
+                
+                # 第一步过滤：跳过纯空字符串
+                if not text_content.strip():
+                    continue
+                    
                 xpath = self._create_element_xpath(text_elem)
                 
                 # Get shape context - with infinite loop protection
@@ -474,13 +482,10 @@ class OOXMLParser:
                 if depth >= max_depth:
                     self.logger.warning(f"PPT shape container search exceeded depth limit ({max_depth}) for text: {text_content[:50]}...")
                 
-                # 分析空格信息
-                space_info = self._analyze_text_spaces(text_content)
-                
                 text_segments.append({
                     "sequence_id": len(text_segments),
                     "text_id": f"{xml_path}_{idx}",
-                    "original_text": text_content.strip(),  # 存储纯文本内容
+                    "original_text": text_content,  # 保留原始文本，包括前后空格
                     "translated_text": "",
                     "xml_location": {
                         "xml_file_path": xml_path,
@@ -491,8 +496,7 @@ class OOXMLParser:
                     "text_metadata": {
                         "char_count": len(text_content),
                         "is_rich_text": self._has_formatting(text_elem.getparent())
-                    },
-                    "space_info": space_info
+                    }
                 })
             
             return text_segments
@@ -501,7 +505,7 @@ class OOXMLParser:
             return []
     
     def _create_element_xpath(self, element) -> str:
-        """Create an XPath expression to locate this element."""
+        """Create an XPath expression to locate this element with optimized position calculation."""
         path_parts = []
         current = element
         
@@ -522,16 +526,24 @@ class OOXMLParser:
                 else:
                     tag = local_name
             
-            # Get position among siblings
-            siblings = [s for s in current.getparent() if s.tag == current.tag] if current.getparent() is not None else [current]
-            position = siblings.index(current) + 1 if current in siblings else 1
+            # Optimized position calculation - avoid O(n²) complexity
+            parent = current.getparent()
+            if parent is not None:
+                position = 1
+                for sibling in parent:
+                    if sibling.tag == current.tag:
+                        if sibling is current:
+                            break
+                        position += 1
+            else:
+                position = 1
             
             if position > 1:
                 path_parts.append(f"{tag}[{position}]")
             else:
                 path_parts.append(tag)
             
-            current = current.getparent()
+            current = parent
         
         path_parts.reverse()
         return "//" + "/".join(path_parts)
@@ -701,33 +713,4 @@ class OOXMLParser:
                     "Ensure file was saved properly from original application"
                 ]
             }
-        }
-    
-    def _analyze_text_spaces(self, raw_text: str) -> Dict[str, Any]:
-        """
-        分析文本的空格信息，用于后续空格恢复。
-        
-        Args:
-            raw_text: 原始文本内容
-            
-        Returns:
-            包含空格信息的字典
-        """
-        if not raw_text:
-            return {
-                "raw_text": "",
-                "leading_spaces": 0,
-                "trailing_spaces": 0,
-                "is_pure_space": True,
-                "has_content": False
-            }
-        
-        stripped_text = raw_text.strip()
-        
-        return {
-            "raw_text": raw_text,
-            "leading_spaces": len(raw_text) - len(raw_text.lstrip()),
-            "trailing_spaces": len(raw_text) - len(raw_text.rstrip()),
-            "is_pure_space": stripped_text == "",
-            "has_content": stripped_text != ""
         }
