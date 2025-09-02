@@ -10,6 +10,12 @@ on:
   workflow_dispatch:
     # Allow manual trigger
 
+# Grant workflow permissions to create releases and upload artifacts
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+
 env:
   PYTHON_VERSION: '3.12'
 
