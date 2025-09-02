@@ -29,13 +29,21 @@ class GetTranslationTextsTool(Tool):
             chunk_size = tool_parameters.get("chunk_size", 1500)
             max_segments_per_chunk = tool_parameters.get("max_segments_per_chunk", 50)
             
+            # Get new chunking strategy parameters
+            chunk_strategy = tool_parameters.get("chunk_strategy", "by_total_chunks")
+            min_segments_per_chunk = tool_parameters.get("min_segments_per_chunk", 10)
+            max_total_chunks = tool_parameters.get("max_total_chunks", 100)
+            target_total_chunks = tool_parameters.get("target_total_chunks")  # Optional, can be None
+            enable_overlap = tool_parameters.get("enable_overlap", False)
+            
             # Validate required parameters
             if not file_id:
                 logger.error("[GetTranslationTexts] Missing required parameter: file_id")
                 yield self.create_text_message("Error: file_id is required.")
                 return
             
-            logger.info(f"[GetTranslationTexts] Parameters - Output format: {output_format}, Chunk size: {chunk_size}, Max segments: {max_segments_per_chunk}")
+            logger.info(f"[GetTranslationTexts] Parameters - Output format: {output_format}, Chunk strategy: {chunk_strategy}, Overlap enabled: {enable_overlap}")
+            logger.info(f"[GetTranslationTexts] Strategy params - Chunk size: {chunk_size}, Max segments: {max_segments_per_chunk}, Min segments: {min_segments_per_chunk}, Max chunks: {max_total_chunks}, Target chunks: {target_total_chunks}")
             
             logger.info(f"[GetTranslationTexts] Processing file_id: {file_id}")
             logger.debug(f"[GetTranslationTexts] Starting XML text retrieval process")
@@ -104,8 +112,26 @@ class GetTranslationTextsTool(Tool):
             # Handle different output formats
             if output_format == "array":
                 # Create chunks for parallel processing
-                logger.info(f"[GetTranslationTexts] Creating chunks for array output format")
-                chunks = self._create_chunks_with_overlap(xml_segments, chunk_size, max_segments_per_chunk)
+                logger.info(f"[GetTranslationTexts] Creating chunks for array output format using {chunk_strategy} strategy")
+                
+                # Choose chunking method based on strategy
+                if chunk_strategy == "by_total_chunks":
+                    # Use intelligent total chunk count strategy
+                    chunks = self._create_chunks_by_total_count(
+                        xml_segments, target_total_chunks, min_segments_per_chunk, max_total_chunks, enable_overlap
+                    )
+                    # Calculate optimal chunks for output statistics
+                    optimal_chunks_calculated, _ = self._calculate_optimal_chunks(
+                        len(xml_segments), min_segments_per_chunk, max_total_chunks
+                    )
+                else:
+                    # Use legacy size and segments strategy
+                    if enable_overlap:
+                        chunks = self._create_chunks_with_overlap(xml_segments, chunk_size, max_segments_per_chunk)
+                    else:
+                        chunks = self._create_chunks(xml_segments, chunk_size, max_segments_per_chunk)
+                    optimal_chunks_calculated = None  # Not calculated for legacy strategy
+                
                 chunk_count = len(chunks)
                 
                 # Calculate total length for preview
@@ -113,10 +139,13 @@ class GetTranslationTextsTool(Tool):
                 output_length = len(output_text)
                 preview = output_text[:200] + "..." if len(output_text) > 200 else output_text
                 
-                logger.info(f"[GetTranslationTexts] Created {chunk_count} chunks from {len(xml_segments)} segments")
-                logger.debug(f"[GetTranslationTexts] Chunk statistics - Total chars: {output_length}, Chunks: {chunk_count}")
+                # Calculate average segments per chunk
+                avg_segments_per_chunk = len(content_segments) / chunk_count if chunk_count > 0 else 0
                 
-                yield self.create_text_message(f"Created {chunk_count} chunks from {len(content_segments)} text segments for parallel translation")
+                logger.info(f"[GetTranslationTexts] Created {chunk_count} chunks from {len(xml_segments)} segments using {chunk_strategy} strategy")
+                logger.debug(f"[GetTranslationTexts] Chunk statistics - Total chars: {output_length}, Chunks: {chunk_count}, Avg segments per chunk: {avg_segments_per_chunk:.1f}")
+                
+                yield self.create_text_message(f"Created {chunk_count} chunks from {len(content_segments)} text segments using {chunk_strategy} strategy for parallel translation")
                 
                 # Output chunks as array for iteration node
                 yield self.create_variable_message("chunks", chunks)
@@ -131,7 +160,10 @@ class GetTranslationTextsTool(Tool):
                     "preview": preview,
                     "file_type": metadata.get("file_type", "unknown"),
                     "total_segments": len(text_segments),
-                    "message": f"Successfully created {chunk_count} chunks from {len(content_segments)} text segments for parallel translation"
+                    "chunk_strategy_used": chunk_strategy,
+                    "avg_segments_per_chunk": round(avg_segments_per_chunk, 1),
+                    "optimal_chunks_calculated": optimal_chunks_calculated,
+                    "message": f"Successfully created {chunk_count} chunks from {len(content_segments)} text segments using {chunk_strategy} strategy for parallel translation"
                 }
             else:
                 # Single string output (original behavior)
@@ -148,6 +180,11 @@ class GetTranslationTextsTool(Tool):
                 logger.info(f"[GetTranslationTexts] Creating variable output for LLM translation")
                 yield self.create_variable_message("original_texts", output_text)
                 
+                # For string format, calculate what the optimal chunks would be for informational purposes
+                optimal_chunks_calculated, _ = self._calculate_optimal_chunks(
+                    len(xml_segments), min_segments_per_chunk, max_total_chunks
+                ) if chunk_strategy == "by_total_chunks" else (None, None)
+                
                 # Return detailed results for string format
                 result = {
                     "success": True,
@@ -157,6 +194,9 @@ class GetTranslationTextsTool(Tool):
                     "preview": preview,
                     "file_type": metadata.get("file_type", "unknown"),
                     "total_segments": len(text_segments),
+                    "chunk_strategy_used": chunk_strategy,
+                    "avg_segments_per_chunk": len(content_segments),  # All segments in one chunk for string format
+                    "optimal_chunks_calculated": optimal_chunks_calculated,
                     "message": f"Successfully retrieved {len(content_segments)} text segments for translation"
                 }
             
@@ -242,6 +282,68 @@ class GetTranslationTextsTool(Tool):
         except Exception as e:
             logger.error(f"[GetTranslationTexts] Error XML escaping text: {str(e)}")
             return text  # Return original if escaping fails
+    
+    def _calculate_optimal_chunks(self, total_segments: int, min_segments_per_chunk: int = 10, max_total_chunks: int = 100) -> tuple:
+        """
+        智能计算最优分块策略。
+        
+        根据总段落数量智能计算最优的分块数量和每块段落数，遵循以下规则：
+        - 如果段落数少（≤100），优先保证每个分块至少有min_segments_per_chunk个段落
+        - 如果段落数多（≥1000），限制最大分块数不超过max_total_chunks
+        - 中间情况，动态平衡计算
+        
+        Args:
+            total_segments: 总段落数
+            min_segments_per_chunk: 每个分块最少段落数
+            max_total_chunks: 最大分块数限制
+            
+        Returns:
+            tuple: (target_chunks, segments_per_chunk)
+                - target_chunks: 目标分块数
+                - segments_per_chunk: 每个分块的段落数
+        """
+        logger.debug(f"[GetTranslationTexts] Calculating optimal chunks - Total segments: {total_segments}, Min per chunk: {min_segments_per_chunk}, Max chunks: {max_total_chunks}")
+        
+        if total_segments <= 0:
+            return 1, 0
+        
+        # 情况1：段落数少，优先保证每个分块至少有min_segments_per_chunk个段落
+        # 阈值：min_segments_per_chunk * 10，例如默认10*10=100个段落
+        if total_segments <= min_segments_per_chunk * 10:
+            target_chunks = max(1, total_segments // min_segments_per_chunk)
+            # 如果不能整除，确保所有段落都被包含
+            if total_segments % min_segments_per_chunk > 0:
+                target_chunks += 1
+            segments_per_chunk = total_segments // target_chunks
+            # 确保每个分块至少有1个段落
+            segments_per_chunk = max(1, segments_per_chunk)
+            
+            logger.info(f"[GetTranslationTexts] Few segments strategy - Target chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+            return target_chunks, segments_per_chunk
+        
+        # 情况2：段落数多，限制最大分块数
+        # 阈值：max_total_chunks * min_segments_per_chunk，例如默认100*10=1000个段落
+        elif total_segments >= max_total_chunks * min_segments_per_chunk:
+            target_chunks = max_total_chunks
+            segments_per_chunk = total_segments // target_chunks
+            # 确保每个分块至少有min_segments_per_chunk个段落
+            segments_per_chunk = max(min_segments_per_chunk, segments_per_chunk)
+            
+            logger.info(f"[GetTranslationTexts] Many segments strategy - Target chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+            return target_chunks, segments_per_chunk
+        
+        # 情况3：中间情况（100-1000个段落），动态计算
+        else:
+            # 目标分块数 = 总段落数 / 每块最少段落数，但不超过最大分块数
+            target_chunks = min(total_segments // min_segments_per_chunk, max_total_chunks)
+            target_chunks = max(1, target_chunks)  # 至少1个分块
+            
+            segments_per_chunk = total_segments // target_chunks
+            # 确保每个分块至少有min_segments_per_chunk个段落
+            segments_per_chunk = max(min_segments_per_chunk, segments_per_chunk)
+            
+            logger.info(f"[GetTranslationTexts] Balanced strategy - Target chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+            return target_chunks, segments_per_chunk
     
     
     def _create_chunks(self, xml_segments: list, chunk_size: int, max_segments_per_chunk: int) -> list:
@@ -363,5 +465,119 @@ class GetTranslationTextsTool(Tool):
         for i, chunk in enumerate(chunks):
             chunk_lines = chunk.count('\n') + 1
             logger.debug(f"[GetTranslationTexts] Overlap chunk {i+1}: {len(chunk)} chars, {chunk_lines} segments")
+        
+        return chunks
+    
+    def _create_chunks_by_total_count(self, xml_segments: list, target_total_chunks: int = None, min_segments_per_chunk: int = 10, max_total_chunks: int = 100, enable_overlap: bool = False) -> list:
+        """
+        根据总分块数创建XML段落块，智能计算最优分块策略。
+        
+        此方法使用智能算法根据总段落数量自动计算最优的分块策略，
+        平衡分块数量和每块段落数，确保翻译效率和质量。
+        
+        Args:
+            xml_segments: XML格式的文本段落列表
+            target_total_chunks: 目标总分块数（可选，未指定则自动计算）
+            min_segments_per_chunk: 每个分块最少段落数
+            max_total_chunks: 最大分块数限制
+            enable_overlap: 是否启用5%重叠功能
+            
+        Returns:
+            分块后的XML字符串列表，每个字符串包含多个XML段落
+        """
+        if not xml_segments:
+            return []
+        
+        total_segments = len(xml_segments)
+        logger.info(f"[GetTranslationTexts] Starting intelligent chunking - Total segments: {total_segments}, Overlap enabled: {enable_overlap}")
+        
+        # 计算重叠大小（如果启用重叠）
+        if enable_overlap:
+            # 基于segments_per_chunk计算重叠大小，会在计算分块策略后使用
+            pass  # 重叠大小将在分块执行阶段计算
+        
+        # 计算最优分块策略
+        if target_total_chunks is None:
+            # 使用智能算法自动计算
+            target_chunks, segments_per_chunk = self._calculate_optimal_chunks(
+                total_segments, min_segments_per_chunk, max_total_chunks
+            )
+            logger.info(f"[GetTranslationTexts] Auto-calculated optimal strategy - Target chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+        else:
+            # 使用用户指定的目标分块数，但要应用限制
+            target_chunks = min(max(1, target_total_chunks), max_total_chunks)
+            segments_per_chunk = max(min_segments_per_chunk, total_segments // target_chunks)
+            
+            # 重新计算实际分块数以确保所有段落都被包含
+            if total_segments % segments_per_chunk > 0:
+                target_chunks = (total_segments // segments_per_chunk) + 1
+            
+            logger.info(f"[GetTranslationTexts] User-specified strategy - Target chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+        
+        logger.debug(f"[GetTranslationTexts] Final chunking parameters - Chunks: {target_chunks}, Segments per chunk: {segments_per_chunk}")
+        
+        # 计算重叠大小
+        overlap_size = 0
+        if enable_overlap:
+            overlap_size = max(1, int(segments_per_chunk * 0.05))  # 5%重叠
+            logger.info(f"[GetTranslationTexts] Overlap enabled - Overlap size: {overlap_size} segments")
+        
+        # 执行分块操作
+        chunks = []
+        if enable_overlap:
+            # 使用重叠逻辑
+            start_index = 0
+            
+            while start_index < total_segments:
+                # 计算当前分块的结束位置
+                end_index = min(start_index + segments_per_chunk, total_segments)
+                
+                # 提取当前分块的段落
+                chunk_segments = xml_segments[start_index:end_index]
+                if chunk_segments:  # 确保分块非空
+                    chunk_text = '\n'.join(chunk_segments)
+                    chunks.append(chunk_text)
+                    logger.debug(f"[GetTranslationTexts] Overlap chunk {len(chunks)} created - Segments {start_index+1}-{end_index}, {len(chunk_segments)} segments, {len(chunk_text)} chars")
+                
+                # 计算下一块的起始位置（有重叠）
+                if start_index + len(chunk_segments) >= total_segments:
+                    break
+                    
+                # 下一块起始位置：当前块结束位置 - 重叠大小
+                start_index = start_index + len(chunk_segments) - overlap_size
+        else:
+            # 使用无重叠的标准逻辑
+            for chunk_idx in range(target_chunks):
+                start_idx = chunk_idx * segments_per_chunk
+                # 对于最后一个分块，包含所有剩余的段落
+                if chunk_idx == target_chunks - 1:
+                    end_idx = total_segments
+                else:
+                    end_idx = min(start_idx + segments_per_chunk, total_segments)
+                
+                # 如果起始索引超出范围，跳出循环
+                if start_idx >= total_segments:
+                    break
+                
+                # 提取当前分块的段落
+                chunk_segments = xml_segments[start_idx:end_idx]
+                if chunk_segments:  # 确保分块非空
+                    chunk_text = '\n'.join(chunk_segments)
+                    chunks.append(chunk_text)
+                    logger.debug(f"[GetTranslationTexts] Standard chunk {len(chunks)} created - Segments {start_idx+1}-{end_idx}, {len(chunk_segments)} segments, {len(chunk_text)} chars")
+        
+        logger.info(f"[GetTranslationTexts] Intelligent chunking completed - Created {len(chunks)} chunks from {total_segments} segments" + (f" with {overlap_size}-segment overlap" if enable_overlap else " without overlap"))
+        
+        # 记录每个分块的详细统计信息
+        for i, chunk in enumerate(chunks):
+            chunk_lines = chunk.count('\n') + 1
+            logger.debug(f"[GetTranslationTexts] Chunk {i+1} stats: {len(chunk)} chars, {chunk_lines} segments")
+        
+        # 验证所有段落都被包含
+        total_segments_in_chunks = sum(chunk.count('\n') + 1 for chunk in chunks)
+        if total_segments_in_chunks != total_segments:
+            logger.warning(f"[GetTranslationTexts] Segment count mismatch - Original: {total_segments}, In chunks: {total_segments_in_chunks}")
+        else:
+            logger.debug(f"[GetTranslationTexts] Segment count verification passed - All {total_segments} segments included")
         
         return chunks

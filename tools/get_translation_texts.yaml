@@ -71,11 +71,93 @@ parameters:
       en_US: "Max Segments per Chunk"
       zh_Hans: "每块最大段落数"
     human_description:
-      en_US: "Maximum XML segments per chunk (only effective when output_format is 'array')"
-      zh_Hans: "每块最大XML段落数（仅在输出格式为'array'时生效）"
-    llm_description: "Maximum number of XML segments per chunk when using array output format"
+      en_US: "Maximum XML segments per chunk (only effective when output_format is 'array' and chunk_strategy is 'by_size_and_segments')"
+      zh_Hans: "每块最大XML段落数（仅在输出格式为'array'且分块策略为'by_size_and_segments'时生效）"
+    llm_description: "Maximum number of XML segments per chunk when using array output format with by_size_and_segments strategy"
     min: 10
     max: 100
+    
+  - name: chunk_strategy
+    type: select
+    required: false
+    default: "by_total_chunks"
+    form: form
+    label:
+      en_US: "Chunking Strategy"
+      zh_Hans: "分块策略"
+    human_description:
+      en_US: "Choose chunking strategy: by_size_and_segments for current method, by_total_chunks for intelligent total count method"
+      zh_Hans: "选择分块策略：by_size_and_segments为当前方法，by_total_chunks为智能总数方法"
+    llm_description: "Chunking strategy selection: 'by_size_and_segments' uses size and segment limits (legacy), 'by_total_chunks' uses intelligent total chunk count calculation (recommended)"
+    placeholder:
+      en_US: "Select chunking strategy"
+      zh_Hans: "选择分块策略"
+    options:
+      - value: "by_total_chunks"
+        label:
+          en_US: "By Total Chunks (Intelligent, Default)"
+          zh_Hans: "按总分块数（智能，默认）"
+      - value: "by_size_and_segments"
+        label:
+          en_US: "By Size and Segments (Legacy)"
+          zh_Hans: "按大小和段落数（传统）"
+          
+  - name: min_segments_per_chunk
+    type: number
+    required: false
+    default: 10
+    form: form
+    label:
+      en_US: "Min Segments per Chunk"
+      zh_Hans: "每块最少段落数"
+    human_description:
+      en_US: "Minimum XML segments per chunk (only effective when chunk_strategy is 'by_total_chunks')"
+      zh_Hans: "每块最少XML段落数（仅在分块策略为'by_total_chunks'时生效）"
+    llm_description: "Minimum number of XML segments per chunk when using by_total_chunks strategy"
+    min: 5
+    max: 50
+      
+  - name: max_total_chunks
+    type: number
+    required: false
+    default: 100
+    form: form
+    label:
+      en_US: "Max Total Chunks"
+      zh_Hans: "最大分块总数"
+    human_description:
+      en_US: "Maximum total number of chunks allowed (only effective when chunk_strategy is 'by_total_chunks')"
+      zh_Hans: "允许的最大分块总数（仅在分块策略为'by_total_chunks'时生效）"
+    llm_description: "Maximum total number of chunks when using by_total_chunks strategy"
+    min: 5
+    max: 200
+    
+  - name: target_total_chunks
+    type: number
+    required: false
+    form: form
+    label:
+      en_US: "Target Total Chunks (Optional)"
+      zh_Hans: "目标分块总数（可选）"
+    human_description:
+      en_US: "Manually specify target total chunks (optional, auto-calculated if not specified when chunk_strategy is 'by_total_chunks')"
+      zh_Hans: "手动指定目标分块总数（可选，分块策略为'by_total_chunks'时未指定则自动计算）"
+    llm_description: "Optional manual specification of target total chunks for by_total_chunks strategy"
+    min: 1
+    max: 200
+    
+  - name: enable_overlap
+    type: boolean
+    required: false
+    default: false
+    form: form
+    label:
+      en_US: "Enable Overlap"
+      zh_Hans: "启用重叠"
+    human_description:
+      en_US: "Enable 5% overlap between chunks to prevent boundary translation issues (works with all chunking strategies)"
+      zh_Hans: "启用分块间5%重叠以防止边界翻译问题（适用于所有分块策略）"
+    llm_description: "Enable 5% overlap between chunks to prevent boundary translation issues. When enabled, adjacent chunks will have 5% overlapping segments, and duplicate translations will be resolved by taking the later one."
 extra:
   python:
     source: tools/get_translation_texts.py
@@ -109,6 +191,15 @@ output_schema:
     file_type:
       type: string
       description: "Source file type for context"
+    chunk_strategy_used:
+      type: string
+      description: "The chunking strategy actually used for processing"
+    avg_segments_per_chunk:
+      type: number
+      description: "Average number of segments per chunk"
+    optimal_chunks_calculated:
+      type: integer
+      description: "The optimal chunk count calculated by intelligent algorithm (when using by_total_chunks strategy)"
     message:
       type: string
       description: "Status message"

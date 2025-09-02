@@ -153,8 +153,10 @@ class UpdateTranslationsTool(Tool):
                             skipped_count += 1
                             logger.debug(f"[UpdateTranslations] Skipped empty translation for index {i}, xml_id {xml_id}")
                     else:
-                        skipped_count += 1
-                        logger.warning(f"[UpdateTranslations] Missing translation for index {i}, xml_id {xml_id}")
+                        # 设置为空字符串而不是跳过
+                        segment['translated_text'] = ''
+                        updated_count += 1
+                        logger.info(f"[UpdateTranslations] Set empty string for missing translation - index {i}, xml_id {xml_id}")
                 elif segment_mapping:
                     # 有映射但当前segment不在映射中，跳过
                     skipped_count += 1
@@ -171,8 +173,10 @@ class UpdateTranslationsTool(Tool):
                         else:
                             skipped_count += 1
                     else:
-                        skipped_count += 1
-                        logger.warning(f"[UpdateTranslations] Legacy mode - missing translation for index {i}, xml_id {xml_id}")
+                        # 设置为空字符串而不是跳过（兼容模式）
+                        segment['translated_text'] = ''
+                        updated_count += 1
+                        logger.info(f"[UpdateTranslations] Legacy mode - Set empty string for missing translation - index {i}, xml_id {xml_id}")
             
             # Store updated text segments
             logger.info(f"[UpdateTranslations] Storing updated text segments")

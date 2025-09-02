@@ -3,6 +3,7 @@ import zipfile
 import io
 import base64
 import logging
+import re
 from typing import Dict, List, Any, Tuple
 from lxml import etree
 
@@ -49,6 +50,60 @@ class OOXMLRebuilder:
         # Use secure parser that prevents XXE attacks
         return etree.fromstring(xml_content, parser=self.xml_parser)
     
+    def _should_add_space_after(self, current_text: str, next_text: str) -> bool:
+        """
+        判断当前文本后是否应该添加空格
+        简化规则：如果当前文本和下一个文本都是英语单词、数字且非标点，则添加空格
+        
+        Args:
+            current_text: 当前文本
+            next_text: 下一个文本
+            
+        Returns:
+            是否需要在当前文本后添加空格
+        """
+        if not current_text or not next_text:
+            return False
+        
+        current_text = current_text.strip()
+        next_text = next_text.strip()
+        
+        # 简单规则：检查是否都是英语单词或数字（非标点）
+        is_current_word_or_digit = bool(re.match(r'^[a-zA-Z0-9]+$', current_text))
+        is_next_word_or_digit = bool(re.match(r'^[a-zA-Z0-9]+$', next_text))
+        
+        return is_current_word_or_digit and is_next_word_or_digit
+    
+    def _preprocess_segments_with_spaces(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        预处理segments，为需要添加空格的segment在translated_text末尾添加空格
+        这样空格就成为segment内容的一部分，不会在后续处理中出错
+        
+        Args:
+            segments: 所有的文本segments
+            
+        Returns:
+            处理后的segments列表
+        """
+        # 按sequence_id排序确保正确的顺序
+        segments.sort(key=lambda x: x.get('sequence_id', 0))
+        
+        # 处理每个segment，检查是否需要在其后添加空格
+        for i in range(len(segments) - 1):
+            current_segment = segments[i]
+            next_segment = segments[i + 1]
+            
+            current_text = current_segment.get('translated_text', '')
+            next_text = next_segment.get('translated_text', '')
+            
+            # 如果需要添加空格，直接修改当前segment的translated_text
+            if self._should_add_space_after(current_text, next_text):
+                # 确保不重复添加空格
+                if current_text and not current_text.endswith(' '):
+                    current_segment['translated_text'] = current_text + ' '
+        
+        return segments
+    
     def rebuild_document(self, original_file_data: bytes, text_segments: List[Dict[str, Any]], 
                         file_type: str) -> Tuple[bytes, int]:
         """
@@ -82,6 +137,9 @@ class OOXMLRebuilder:
     
     def _rebuild_docx(self, original_zip: zipfile.ZipFile, text_segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
         """Rebuild DOCX document with translated text."""
+        # Preprocess segments with simplified space insertion logic
+        text_segments = self._preprocess_segments_with_spaces(text_segments)
+        
         # Create new ZIP file in memory
         new_zip_buffer = io.BytesIO()
         
@@ -112,6 +170,9 @@ class OOXMLRebuilder:
     
     def _rebuild_xlsx(self, original_zip: zipfile.ZipFile, text_segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
         """Rebuild XLSX document with translated text."""
+        # Preprocess segments with simplified space insertion logic
+        text_segments = self._preprocess_segments_with_spaces(text_segments)
+        
         new_zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(new_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as new_zip:
@@ -149,6 +210,9 @@ class OOXMLRebuilder:
     
     def _rebuild_pptx(self, original_zip: zipfile.ZipFile, text_segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
         """Rebuild PPTX document with translated text."""
+        # Preprocess segments with simplified space insertion logic
+        text_segments = self._preprocess_segments_with_spaces(text_segments)
+        
         new_zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(new_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as new_zip:
@@ -181,16 +245,16 @@ class OOXMLRebuilder:
         segments_by_file = {}
         for segment in text_segments:
             xml_path = segment.get('xml_location', {}).get('xml_file_path', '')
-            # 包含所有有translated_text的segments，包括空格segments
+            # 包含所有有translated_text的segments，包括空字符串（用于替换缺失翻译）
             translated_text = segment.get('translated_text', '')
-            if xml_path and translated_text is not None and translated_text != '':
+            if xml_path and translated_text is not None:
                 if xml_path not in segments_by_file:
                     segments_by_file[xml_path] = []
                 segments_by_file[xml_path].append(segment)
         return segments_by_file
     
     def _replace_docx_text_in_xml(self, xml_content: bytes, segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
-        """Replace text in DOCX XML content."""
+        """Replace text in DOCX XML content using preprocessed segments with spaces."""
         try:
             root = self._secure_parse_xml(xml_content)
             replaced_count = 0
@@ -198,11 +262,15 @@ class OOXMLRebuilder:
             # Sort segments by sequence_id to maintain order
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
+            # Process segments with simplified replacement
             for segment in segments:
-                # 获取完整的translated_text，包括空格
+                # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
-                if translated_text is None:  # 只跳过None值，保留空字符串和空格
+                if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
                     continue
+                
+                # Use translated_text directly - spaces already added in preprocessing
+                final_text = translated_text
                 
                 xpath = segment.get('xml_location', {}).get('element_xpath', '')
                 namespace_map = segment.get('xml_location', {}).get('namespace_map', {})
@@ -212,7 +280,7 @@ class OOXMLRebuilder:
                         # Find the text element using xpath
                         elements = root.xpath(xpath, namespaces=namespace_map)
                         if elements:
-                            elements[0].text = translated_text  # 使用完整的translated_text，包括空格
+                            elements[0].text = final_text
                             replaced_count += 1
                     except Exception as e:
                         self.logger.warning(f"Failed to replace text at xpath {xpath}: {str(e)}")
@@ -223,7 +291,7 @@ class OOXMLRebuilder:
             return xml_content, 0
     
     def _replace_xlsx_shared_strings(self, xml_content: bytes, segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
-        """Replace text in Excel shared strings table."""
+        """Replace text in Excel shared strings table using preprocessed segments with spaces."""
         try:
             root = self._secure_parse_xml(xml_content)
             replaced_count = 0
@@ -231,11 +299,15 @@ class OOXMLRebuilder:
             # Sort segments by sequence_id to maintain order
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
+            # Process segments with simplified replacement
             for segment in segments:
-                # 获取完整的translated_text，包括空格
+                # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
-                if translated_text is None:  # 只跳过None值，保留空字符串和空格
+                if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
                     continue
+                
+                # Use translated_text directly - spaces already added in preprocessing
+                final_text = translated_text
                 
                 xml_location = segment.get('xml_location', {})
                 shared_string_index = xml_location.get('shared_string_index')
@@ -254,7 +326,7 @@ class OOXMLRebuilder:
                                 si_elem = si_elements[0]
                                 t_elements = si_elem.xpath(".//x:t", namespaces=namespace_map)
                                 if t_elements:
-                                    t_elements[0].text = translated_text
+                                    t_elements[0].text = final_text
                                     replaced_count += 1
                         elif 'default' in namespace_map:
                             # 使用默认命名空间
@@ -263,7 +335,7 @@ class OOXMLRebuilder:
                                 si_elem = si_elements[0]
                                 t_elements = si_elem.xpath(".//default:t", namespaces=namespace_map)
                                 if t_elements:
-                                    t_elements[0].text = translated_text
+                                    t_elements[0].text = final_text
                                     replaced_count += 1
                         else:
                             # 不使用命名空间
@@ -272,7 +344,7 @@ class OOXMLRebuilder:
                                 si_elem = si_elements[0]
                                 t_elements = si_elem.xpath(".//t")
                                 if t_elements:
-                                    t_elements[0].text = translated_text
+                                    t_elements[0].text = final_text
                                     replaced_count += 1
                     except Exception as e:
                         self.logger.warning(f"Failed to replace shared string at index {shared_string_index}: {str(e)}")
@@ -283,7 +355,7 @@ class OOXMLRebuilder:
             return xml_content, 0
     
     def _replace_xlsx_text_in_xml(self, xml_content: bytes, segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
-        """Replace direct text in Excel worksheet XML."""
+        """Replace direct text in Excel worksheet XML using preprocessed segments with spaces."""
         try:
             root = self._secure_parse_xml(xml_content)
             replaced_count = 0
@@ -291,11 +363,15 @@ class OOXMLRebuilder:
             # Sort segments by sequence_id to maintain order
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
+            # Process segments with simplified replacement
             for segment in segments:
-                # 获取完整的translated_text，包括空格
+                # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
-                if translated_text is None:  # 只跳过None值，保留空字符串和空格
+                if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
                     continue
+                
+                # Use translated_text directly - spaces already added in preprocessing
+                final_text = translated_text
                 
                 xpath = segment.get('xml_location', {}).get('element_xpath', '')
                 namespace_map = segment.get('xml_location', {}).get('namespace_map', {})
@@ -305,7 +381,7 @@ class OOXMLRebuilder:
                         # Find the cell value element using xpath
                         elements = root.xpath(xpath, namespaces=namespace_map)
                         if elements:
-                            elements[0].text = translated_text  # 使用完整的translated_text，包括空格
+                            elements[0].text = final_text
                             replaced_count += 1
                     except Exception as e:
                         self.logger.warning(f"Failed to replace text at xpath {xpath}: {str(e)}")
@@ -316,7 +392,7 @@ class OOXMLRebuilder:
             return xml_content, 0
     
     def _replace_pptx_text_in_xml(self, xml_content: bytes, segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
-        """Replace text in PowerPoint XML content."""
+        """Replace text in PowerPoint XML content using preprocessed segments with spaces."""
         try:
             root = self._secure_parse_xml(xml_content)
             replaced_count = 0
@@ -324,11 +400,15 @@ class OOXMLRebuilder:
             # Sort segments by sequence_id to maintain order
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
+            # Process segments with simplified replacement
             for segment in segments:
-                # 获取完整的translated_text，包括空格
+                # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
-                if translated_text is None:  # 只跳过None值，保留空字符串和空格
+                if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
                     continue
+                
+                # Use translated_text directly - spaces already added in preprocessing
+                final_text = translated_text
                 
                 xpath = segment.get('xml_location', {}).get('element_xpath', '')
                 namespace_map = segment.get('xml_location', {}).get('namespace_map', {})
@@ -338,7 +418,7 @@ class OOXMLRebuilder:
                         # Find the text element using xpath
                         elements = root.xpath(xpath, namespaces=namespace_map)
                         if elements:
-                            elements[0].text = translated_text  # 使用完整的translated_text，包括空格
+                            elements[0].text = final_text
                             replaced_count += 1
                     except Exception as e:
                         self.logger.warning(f"Failed to replace text at xpath {xpath}: {str(e)}")
