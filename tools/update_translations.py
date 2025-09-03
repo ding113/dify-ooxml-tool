@@ -248,11 +248,11 @@ class UpdateTranslationsTool(Tool):
                 # XML反转义
                 text_content = self._xml_unescape(text_content)
                 
-                if segment_id and text_content.strip():
+                if segment_id:
                     translation_dict[segment_id] = text_content.strip()
                     logger.debug(f"[UpdateTranslations] Extracted segment {segment_id}: {text_content[:50]}...") if len(translation_dict) <= 5 else None
                 else:
-                    logger.warning(f"[UpdateTranslations] Invalid segment: id={segment_id}, text={text_content[:50] if text_content else 'empty'}")
+                    logger.warning(f"[UpdateTranslations] Invalid segment: missing id, text={text_content[:50] if text_content else 'empty'}")
             
             logger.info(f"[UpdateTranslations] XML parsing completed successfully - {len(translation_dict)} valid translations")
             
