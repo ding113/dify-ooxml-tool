@@ -200,8 +200,18 @@ class OOXMLRebuilder:
             self.logger.debug(f"[OOXMLRebuilder] Segment texts: {repr(current_text)} -> {repr(next_text)}")
             
             # 如果需要添加空格，直接修改当前segment的translated_text
-            if self._should_add_space_after(current_text, next_text) or \
-               self._should_add_space_after_punct(current_text, next_text):
+            should_add = (
+                self._should_add_space_after(current_text, next_text) or
+                self._should_add_space_after_punct(current_text, next_text)
+            )
+            # 特例：数字与数字相邻时不加空格
+            if should_add:
+                ct_s = (current_text or '').strip()
+                nt_s = (next_text or '').strip()
+                if ct_s and nt_s and ct_s[-1].isdigit() and nt_s[0].isdigit():
+                    self.logger.debug(f"[OOXMLRebuilder] Space rule override (digit->digit): seq_{current_seq_id} -> seq_{next_seq_id}, NO SPACE")
+                    should_add = False
+            if should_add:
                 # 确保不重复添加空格
                 if current_text and not current_text.endswith(' '):
                     original_text = current_text
