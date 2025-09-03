@@ -53,8 +53,8 @@ class OOXMLRebuilder:
     def _should_add_space_after(self, current_text: str, next_text: str) -> bool:
         """
         判断当前文本后是否应该添加空格
-        改进规则：如果当前文本和下一个文本都是类单词形式（首尾字符为字母或数字），则添加空格
-        这样可以处理英文缩写、撇号等常见情况，如"don't"、"Mr."等
+        规则：只检查连接点字符 - 当前文本的尾字符是字母或数字，且下一个文本的首字符是字母或数字时添加空格
+        这样可以更精确地处理各种情况，避免在标点符号连接处添加不必要的空格
         
         Args:
             current_text: 当前文本
@@ -72,20 +72,13 @@ class OOXMLRebuilder:
         if not current_text or not next_text:
             return False
         
-        # 改进规则：检查首尾字符是否为字母或数字
-        def is_word_like(text: str) -> bool:
-            """检查文本是否为类单词形式（首尾字符为字母或数字）"""
-            return text and text[0].isalnum() and text[-1].isalnum()
-        
-        is_current_word_like = is_word_like(current_text)
-        is_next_word_like = is_word_like(next_text)
-        
-        return is_current_word_like and is_next_word_like
+        # 只检查连接点字符：前文本的尾字符和后文本的首字符
+        return current_text[-1].isalnum() and next_text[0].isalnum()
     
     def _preprocess_segments_with_spaces(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         预处理segments，为需要添加空格的segment在translated_text末尾添加空格
-        使用改进的空格检测逻辑，支持英文缩写、撇号等常见情况
+        使用改进的空格检测逻辑，只检查连接点字符，更精确地处理各种情况
         这样空格就成为segment内容的一部分，不会在后续处理中出错
         
         Args:
