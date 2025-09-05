@@ -50,13 +50,17 @@ class OOXMLParser:
             'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
         }
     
-    def parse_file(self, file_data: bytes, file_type: str) -> Dict[str, Any]:
+    def parse_file(self, file_data: bytes, file_type: str, text_unit_level: str = "element") -> Dict[str, Any]:
         """
         Main entry point for parsing OOXML files.
         
         Args:
             file_data: Raw file bytes
             file_type: "docx", "xlsx", or "pptx"
+            text_unit_level: Text extraction granularity level
+                - "element": Extract individual w:t elements (default, most precise)
+                - "run": Extract w:r run elements (reduces fragmentation)
+                - "paragraph": Extract w:p paragraph elements (highest coherence)
             
         Returns:
             Dict containing extracted text segments and metadata
@@ -82,11 +86,11 @@ class OOXMLParser:
                         raise ValueError(f"Invalid or corrupted {file_type} file structure")
                     
                     if file_type == "docx":
-                        return self._parse_docx(zip_file)
+                        return self._parse_docx(zip_file, text_unit_level)
                     elif file_type == "xlsx":
-                        return self._parse_xlsx(zip_file)
+                        return self._parse_xlsx(zip_file, text_unit_level)
                     elif file_type == "pptx":
-                        return self._parse_pptx(zip_file)
+                        return self._parse_pptx(zip_file, text_unit_level)
                     else:
                         raise ValueError(f"Unsupported file type: {file_type}")
                         
@@ -119,8 +123,8 @@ class OOXMLParser:
                 
         return self._create_error_response("Maximum retry attempts exceeded", file_type)
     
-    def _parse_docx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
-        """Parse DOCX file and extract all text segments with optimized file list caching."""
+    def _parse_docx(self, zip_file: zipfile.ZipFile, text_unit_level: str = "element") -> Dict[str, Any]:
+        """Parse DOCX file and extract all text segments with configurable text unit level."""
         text_segments = []
         supported_elements = set()
         
@@ -129,7 +133,7 @@ class OOXMLParser:
         
         # Main document content - word/document.xml
         if "word/document.xml" in file_list:
-            segments = self._extract_docx_document_text(zip_file, "word/document.xml")
+            segments = self._extract_docx_document_text(zip_file, "word/document.xml", text_unit_level)
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("w:t")
@@ -137,32 +141,32 @@ class OOXMLParser:
         # Headers and footers
         for filename in file_list:
             if filename.startswith("word/header") and filename.endswith(".xml"):
-                segments = self._extract_docx_document_text(zip_file, filename)
+                segments = self._extract_docx_document_text(zip_file, filename, text_unit_level)
                 text_segments.extend(segments)
                 if segments:
                     supported_elements.add("header_w:t")
             elif filename.startswith("word/footer") and filename.endswith(".xml"):
-                segments = self._extract_docx_document_text(zip_file, filename)
+                segments = self._extract_docx_document_text(zip_file, filename, text_unit_level)
                 text_segments.extend(segments)
                 if segments:
                     supported_elements.add("footer_w:t")
         
         # Comments
         if "word/comments.xml" in file_list:
-            segments = self._extract_docx_document_text(zip_file, "word/comments.xml")
+            segments = self._extract_docx_document_text(zip_file, "word/comments.xml", text_unit_level)
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("comment_w:t")
         
         # Footnotes and endnotes
         if "word/footnotes.xml" in file_list:
-            segments = self._extract_docx_document_text(zip_file, "word/footnotes.xml")
+            segments = self._extract_docx_document_text(zip_file, "word/footnotes.xml", text_unit_level)
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("footnote_w:t")
         
         if "word/endnotes.xml" in file_list:
-            segments = self._extract_docx_document_text(zip_file, "word/endnotes.xml")
+            segments = self._extract_docx_document_text(zip_file, "word/endnotes.xml", text_unit_level)
             text_segments.extend(segments)
             if segments:
                 supported_elements.add("endnote_w:t")
@@ -174,53 +178,220 @@ class OOXMLParser:
             "file_type": "docx"
         }
     
-    def _extract_docx_document_text(self, zip_file: zipfile.ZipFile, xml_path: str) -> List[Dict[str, Any]]:
-        """Extract text from a specific DOCX XML file."""
+    def _extract_docx_document_text(self, zip_file: zipfile.ZipFile, xml_path: str, text_unit_level: str = "element") -> List[Dict[str, Any]]:
+        """Extract text from a specific DOCX XML file with configurable text unit level."""
         try:
             xml_content = zip_file.read(xml_path)
             root = self._secure_parse_xml(xml_content)
             text_segments = []
             
-            # Find all text elements - optimize by being more specific
-            text_elements = root.xpath("//w:t", namespaces=self.namespaces)
-            
-            for idx, text_elem in enumerate(text_elements):
-                text_content = text_elem.text or ""
-                
-                # 第一步过滤：跳过纯空字符串，统一ID分配
-                if not text_content.strip():
-                    continue
-                
-                # Get parent run element for context
-                run_elem = text_elem.getparent()
-                paragraph_elem = run_elem.getparent() if run_elem is not None else None
-                
-                # Create XPath for precise location
-                xpath = self._create_element_xpath(text_elem)
-                
-                text_segments.append({
-                    "sequence_id": len(text_segments),
-                    "text_id": f"{xml_path}_{idx}",
-                    "original_text": text_content,  # 保留原始文本，包括前后空格
-                    "translated_text": "",
-                    "xml_location": {
-                        "xml_file_path": xml_path,
-                        "element_xpath": xpath,
-                        "parent_context": run_elem.tag if run_elem is not None else "",  # Just store tag name instead of full XML
-                        "namespace_map": {"w": self.namespaces["w"]}
-                    },
-                    "text_metadata": {
-                        "char_count": len(text_content),
-                        "is_rich_text": self._has_formatting(run_elem) if run_elem is not None else False
-                    }
-                })
+            # Route to appropriate extraction method based on text_unit_level
+            if text_unit_level == "run":
+                text_segments = self._extract_by_run_level(root, xml_path)
+            elif text_unit_level == "paragraph":
+                text_segments = self._extract_by_paragraph_level(root, xml_path)
+            else:  # text_unit_level == "element" (default)
+                text_segments = self._extract_by_element_level(root, xml_path)
             
             return text_segments
         except Exception as e:
             self.logger.error(f"Error extracting text from {xml_path}: {str(e)}")
             return []
     
-    def _parse_xlsx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
+    def _extract_by_element_level(self, root, xml_path: str) -> List[Dict[str, Any]]:
+        """Extract text by individual w:t elements (original behavior)."""
+        text_segments = []
+        
+        # Find all text elements - optimize by being more specific
+        text_elements = root.xpath("//w:t", namespaces=self.namespaces)
+        
+        for idx, text_elem in enumerate(text_elements):
+            text_content = text_elem.text or ""
+            
+            # 第一步过滤：跳过纯空字符串，统一ID分配
+            if not text_content.strip():
+                continue
+            
+            # Get parent run element for context
+            run_elem = text_elem.getparent()
+            paragraph_elem = run_elem.getparent() if run_elem is not None else None
+            
+            # Create XPath for precise location
+            xpath = self._create_element_xpath(text_elem)
+            
+            text_segments.append({
+                "sequence_id": len(text_segments),
+                "text_id": f"{xml_path}_{idx}",
+                "original_text": text_content,  # 保留原始文本，包括前后空格
+                "translated_text": "",
+                "text_unit_level": "element",  # Mark the unit level
+                "xml_location": {
+                    "xml_file_path": xml_path,
+                    "element_xpath": xpath,
+                    "parent_context": run_elem.tag if run_elem is not None else "",  # Just store tag name instead of full XML
+                    "namespace_map": {"w": self.namespaces["w"]}
+                },
+                "text_metadata": {
+                    "char_count": len(text_content),
+                    "is_rich_text": self._has_formatting(run_elem) if run_elem is not None else False
+                }
+            })
+        
+        return text_segments
+    
+    def _extract_by_run_level(self, root, xml_path: str) -> List[Dict[str, Any]]:
+        """Extract text by w:r run elements - combines multiple w:t elements within the same run."""
+        text_segments = []
+        
+        # Find all run elements
+        run_elements = root.xpath("//w:r", namespaces=self.namespaces)
+        
+        for idx, run_elem in enumerate(run_elements):
+            # Collect all w:t elements within this run
+            text_elements = run_elem.xpath(".//w:t", namespaces=self.namespaces)
+            
+            if not text_elements:
+                continue
+                
+            # Combine all text content within the run
+            text_parts = [t.text or "" for t in text_elements]
+            full_text = "".join(text_parts)
+            
+            # Skip empty runs
+            if not full_text.strip():
+                continue
+            
+            # Get run properties for formatting information
+            run_properties = run_elem.find("w:rPr", namespaces=self.namespaces)
+            
+            # Create XPath for precise location
+            xpath = self._create_element_xpath(run_elem)
+            
+            text_segments.append({
+                "sequence_id": len(text_segments),
+                "text_id": f"{xml_path}_run_{idx}",
+                "original_text": full_text,  # Complete run text like "12A层"
+                "translated_text": "",
+                "text_unit_level": "run",  # Mark the unit level
+                "xml_location": {
+                    "xml_file_path": xml_path,
+                    "element_xpath": xpath,
+                    "run_properties": self._serialize_run_properties(run_properties),
+                    "namespace_map": {"w": self.namespaces["w"]}
+                },
+                "text_metadata": {
+                    "char_count": len(full_text),
+                    "is_rich_text": self._has_formatting(run_elem),
+                    "text_element_count": len(text_elements)  # Number of original w:t elements
+                }
+            })
+        
+        return text_segments
+    
+    def _extract_by_paragraph_level(self, root, xml_path: str) -> List[Dict[str, Any]]:
+        """Extract text by w:p paragraph elements - combines all text within the same paragraph."""
+        text_segments = []
+        
+        # Find all paragraph elements
+        paragraph_elements = root.xpath("//w:p", namespaces=self.namespaces)
+        
+        for idx, para_elem in enumerate(paragraph_elements):
+            # Collect all w:t elements within this paragraph
+            text_elements = para_elem.xpath(".//w:t", namespaces=self.namespaces)
+            
+            if not text_elements:
+                continue
+                
+            # Combine all text content within the paragraph
+            text_parts = [t.text or "" for t in text_elements]
+            full_text = "".join(text_parts)
+            
+            # Skip empty paragraphs
+            if not full_text.strip():
+                continue
+            
+            # Get paragraph properties
+            para_properties = para_elem.find("w:pPr", namespaces=self.namespaces)
+            
+            # Create XPath for precise location
+            xpath = self._create_element_xpath(para_elem)
+            
+            text_segments.append({
+                "sequence_id": len(text_segments),
+                "text_id": f"{xml_path}_para_{idx}",
+                "original_text": full_text,  # Complete paragraph text
+                "translated_text": "",
+                "text_unit_level": "paragraph",  # Mark the unit level
+                "xml_location": {
+                    "xml_file_path": xml_path,
+                    "element_xpath": xpath,
+                    "paragraph_properties": self._serialize_paragraph_properties(para_properties),
+                    "namespace_map": {"w": self.namespaces["w"]}
+                },
+                "text_metadata": {
+                    "char_count": len(full_text),
+                    "is_rich_text": any(self._has_formatting(run) for run in para_elem.xpath(".//w:r", namespaces=self.namespaces)),
+                    "run_count": len(para_elem.xpath(".//w:r", namespaces=self.namespaces)),
+                    "text_element_count": len(text_elements)
+                }
+            })
+        
+        return text_segments
+    
+    def _serialize_run_properties(self, run_properties) -> dict:
+        """Serialize run properties to a dictionary for storage."""
+        if run_properties is None:
+            return {}
+            
+        props = {}
+        # Extract key formatting properties
+        if run_properties.find("w:b", namespaces=self.namespaces) is not None:
+            props["bold"] = True
+        if run_properties.find("w:i", namespaces=self.namespaces) is not None:
+            props["italic"] = True
+        if run_properties.find("w:u", namespaces=self.namespaces) is not None:
+            props["underline"] = True
+        
+        # Font size
+        sz_elem = run_properties.find("w:sz", namespaces=self.namespaces)
+        if sz_elem is not None and "w:val" in sz_elem.attrib:
+            props["font_size"] = sz_elem.attrib["w:val"]
+            
+        # Font family
+        rfonts_elem = run_properties.find("w:rFonts", namespaces=self.namespaces)
+        if rfonts_elem is not None and "w:ascii" in rfonts_elem.attrib:
+            props["font_family"] = rfonts_elem.attrib["w:ascii"]
+        
+        # Color
+        color_elem = run_properties.find("w:color", namespaces=self.namespaces)
+        if color_elem is not None and "w:val" in color_elem.attrib:
+            props["color"] = color_elem.attrib["w:val"]
+            
+        return props
+    
+    def _serialize_paragraph_properties(self, para_properties) -> dict:
+        """Serialize paragraph properties to a dictionary for storage."""
+        if para_properties is None:
+            return {}
+            
+        props = {}
+        # Extract key paragraph properties
+        # Alignment
+        jc_elem = para_properties.find("w:jc", namespaces=self.namespaces)
+        if jc_elem is not None and "w:val" in jc_elem.attrib:
+            props["alignment"] = jc_elem.attrib["w:val"]
+            
+        # Spacing
+        spacing_elem = para_properties.find("w:spacing", namespaces=self.namespaces)
+        if spacing_elem is not None:
+            if "w:before" in spacing_elem.attrib:
+                props["spacing_before"] = spacing_elem.attrib["w:before"]
+            if "w:after" in spacing_elem.attrib:
+                props["spacing_after"] = spacing_elem.attrib["w:after"]
+                
+        return props
+    
+    def _parse_xlsx(self, zip_file: zipfile.ZipFile, text_unit_level: str = "element") -> Dict[str, Any]:
         """Parse XLSX file and extract all text segments with optimized file list caching."""
         text_segments = []
         supported_elements = set()
@@ -402,7 +573,7 @@ class OOXMLParser:
             self.logger.error(f"Error extracting worksheet text from {xml_path}: {str(e)}")
             return []
     
-    def _parse_pptx(self, zip_file: zipfile.ZipFile) -> Dict[str, Any]:
+    def _parse_pptx(self, zip_file: zipfile.ZipFile, text_unit_level: str = "element") -> Dict[str, Any]:
         """Parse PPTX file and extract all text segments with optimized file list caching."""
         text_segments = []
         supported_elements = set()

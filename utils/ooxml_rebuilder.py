@@ -149,7 +149,6 @@ class OOXMLRebuilder:
             ns_attr = '{http://www.w3.org/XML/1998/namespace}space'
             if self._requires_xml_space_preserve(text):
                 element.set(ns_attr, 'preserve')
-                self.logger.debug("[OOXMLRebuilder] xml:space='preserve' applied to element")
             else:
                 if ns_attr in element.attrib:
                     del element.attrib[ns_attr]
@@ -412,11 +411,15 @@ class OOXMLRebuilder:
             for idx, segment in enumerate(segments):
                 seq_id = segment.get('sequence_id', 'N/A')
                 
+                # Progress reporting every 100 segments
+                if idx % 100 == 0 or idx == len(segments) - 1:
+                    progress_pct = (idx + 1) / len(segments) * 100
+                    self.logger.info(f"[OOXMLRebuilder] Processing DOCX segments: {idx + 1}/{len(segments)} ({progress_pct:.1f}%)")
+                
                 # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
                 if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
                     skipped_count += 1
-                    self.logger.debug(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): SKIPPED (None translated_text)")
                     continue
                 
                 # Use translated_text directly - spaces already added in preprocessing
@@ -426,52 +429,49 @@ class OOXMLRebuilder:
                 namespace_map = segment.get('xml_location', {}).get('namespace_map', {})
                 original_text = segment.get('original_text', '')
                 
-                # Debug: 记录替换前的信息
-                self.logger.debug(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): Processing replacement")
-                self.logger.debug(f"[OOXMLRebuilder] - XPath: {xpath}")
-                self.logger.debug(f"[OOXMLRebuilder] - Original: {repr(original_text)}")
-                self.logger.debug(f"[OOXMLRebuilder] - Final: {repr(final_text)}")
-                
                 # 空格保持验证：检查final_text中的空格
-                space_count = final_text.count(' ')
                 ends_with_space = final_text.endswith(' ')
-                self.logger.debug(f"[OOXMLRebuilder] - Space analysis: {space_count} spaces total, ends_with_space={ends_with_space}")
                 
                 if xpath:
                     try:
-                        # Find the text element using xpath
-                        elements = root.xpath(xpath, namespaces=namespace_map)
-                        if elements:
-                            # 记录替换前的元素内容
-                            old_element_text = elements[0].text or ''
-                            
-                            # 执行替换
-                            elements[0].text = final_text
-                            # 保留首尾/连续空格
-                            self._apply_xml_space_preserve(elements[0], final_text)
-                            # 保留首尾/连续空格
-                            self._apply_xml_space_preserve(elements[0], final_text)
-                            # 保留首尾/连续空格
-                            self._apply_xml_space_preserve(elements[0], final_text)
-                            # 保留首尾/连续空格
-                            self._apply_xml_space_preserve(elements[0], final_text)
-                            # 保留首尾/连续空格
-                            self._apply_xml_space_preserve(elements[0], final_text)
-                            replaced_count += 1
-                            
-                            # Debug: 记录成功的替换
-                            self.logger.debug(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): REPLACED successfully")
-                            self.logger.debug(f"[OOXMLRebuilder] - Element before: {repr(old_element_text)}")
-                            self.logger.debug(f"[OOXMLRebuilder] - Element after: {repr(elements[0].text)}")
-                            
-                            # 空格保持验证：确认替换后空格是否保持
-                            if ends_with_space and not elements[0].text.endswith(' '):
-                                self.logger.warning(f"[OOXMLRebuilder] SPACE LOST during XML replacement for segment seq_{seq_id}!")
-                            elif ends_with_space and elements[0].text.endswith(' '):
-                                self.logger.debug(f"[OOXMLRebuilder] Space preserved in XML replacement for segment seq_{seq_id}")
+                        # Check text_unit_level to determine replacement strategy
+                        text_unit_level = segment.get('text_unit_level', 'element')
+                        
+                        if text_unit_level == 'run':
+                            # Run-level replacement: replace entire w:r run content
+                            success = self._replace_run_level_text(root, xpath, final_text, namespace_map)
+                            if success:
+                                replaced_count += 1
+                            else:
+                                failed_count += 1
+                                self.logger.warning(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): FAILED - Run-level replacement failed at xpath {xpath}")
+                        elif text_unit_level == 'paragraph':
+                            # Paragraph-level replacement: replace entire w:p paragraph content
+                            success = self._replace_paragraph_level_text(root, xpath, final_text, namespace_map)
+                            if success:
+                                replaced_count += 1
+                            else:
+                                failed_count += 1
+                                self.logger.warning(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): FAILED - Paragraph-level replacement failed at xpath {xpath}")
                         else:
-                            failed_count += 1
-                            self.logger.warning(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): FAILED - No elements found at xpath {xpath}")
+                            # Element-level replacement: original behavior for w:t elements
+                            elements = root.xpath(xpath, namespaces=namespace_map)
+                            if elements:
+                                # 记录替换前的元素内容
+                                old_element_text = elements[0].text or ''
+                                
+                                # 执行替换
+                                elements[0].text = final_text
+                                # 保留首尾/连续空格
+                                self._apply_xml_space_preserve(elements[0], final_text)
+                                replaced_count += 1
+                                
+                                # 空格保持验证：确认替换后空格是否保持
+                                if ends_with_space and not elements[0].text.endswith(' '):
+                                    self.logger.warning(f"[OOXMLRebuilder] SPACE LOST during XML replacement for segment seq_{seq_id}!")
+                            else:
+                                failed_count += 1
+                                self.logger.warning(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): FAILED - No elements found at xpath {xpath}")
                     except Exception as e:
                         failed_count += 1
                         self.logger.warning(f"[OOXMLRebuilder] DOCX segment {idx+1} (seq_{seq_id}): FAILED - Exception at xpath {xpath}: {str(e)}")
@@ -493,6 +493,96 @@ class OOXMLRebuilder:
             self.logger.error(f"Error processing DOCX XML: {str(e)}")
             return xml_content, 0
     
+    def _replace_run_level_text(self, root, xpath: str, translated_text: str, namespace_map: dict) -> bool:
+        """Replace text at run level - clears all w:t elements in the run and creates a single new one."""
+        try:
+            # Find the run element using xpath
+            run_elements = root.xpath(xpath, namespaces=namespace_map)
+            if not run_elements:
+                return False
+            
+            run_element = run_elements[0]
+            
+            # Get run properties to preserve formatting
+            run_properties = run_element.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rPr")
+            
+            # Remove all existing w:t elements within this run
+            text_elements = run_element.xpath(".//w:t", namespaces=namespace_map)
+            for t_elem in text_elements:
+                parent = t_elem.getparent()
+                if parent is not None:
+                    parent.remove(t_elem)
+            
+            # Create a new w:t element with the complete translated text
+            new_t_element = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+            new_t_element.text = translated_text
+            
+            # Apply space preservation if needed
+            self._apply_xml_space_preserve(new_t_element, translated_text)
+            
+            # Add the new w:t element to the run
+            # If run has properties, add after them; otherwise, add as first child
+            if run_properties is not None:
+                # Insert after run properties
+                run_element.insert(list(run_element).index(run_properties) + 1, new_t_element)
+            else:
+                # Insert as first child
+                run_element.insert(0, new_t_element)
+            
+            self.logger.debug(f"[OOXMLRebuilder] Run-level replacement successful: replaced run content with '{translated_text}'")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"[OOXMLRebuilder] Run-level replacement failed: {str(e)}")
+            return False
+    
+    def _replace_paragraph_level_text(self, root, xpath: str, translated_text: str, namespace_map: dict) -> bool:
+        """Replace text at paragraph level - clears all text in the paragraph and creates new structure."""
+        try:
+            # Find the paragraph element using xpath
+            para_elements = root.xpath(xpath, namespaces=namespace_map)
+            if not para_elements:
+                return False
+            
+            para_element = para_elements[0]
+            
+            # Get paragraph properties to preserve formatting
+            para_properties = para_element.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+            
+            # Remove all existing w:r run elements within this paragraph
+            run_elements = para_element.xpath(".//w:r", namespaces=namespace_map)
+            for r_elem in run_elements:
+                para_element.remove(r_elem)
+            
+            # Create a new w:r run element
+            new_run_element = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r")
+            
+            # Create a new w:t element with the complete translated text
+            new_t_element = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+            new_t_element.text = translated_text
+            
+            # Apply space preservation if needed
+            self._apply_xml_space_preserve(new_t_element, translated_text)
+            
+            # Add the w:t to the w:r
+            new_run_element.append(new_t_element)
+            
+            # Add the new run to the paragraph
+            # If paragraph has properties, add after them; otherwise, add as first child
+            if para_properties is not None:
+                # Insert after paragraph properties
+                para_element.insert(list(para_element).index(para_properties) + 1, new_run_element)
+            else:
+                # Insert as first child
+                para_element.insert(0, new_run_element)
+            
+            self.logger.debug(f"[OOXMLRebuilder] Paragraph-level replacement successful: replaced paragraph content with '{translated_text}'")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"[OOXMLRebuilder] Paragraph-level replacement failed: {str(e)}")
+            return False
+    
     def _replace_xlsx_shared_strings(self, xml_content: bytes, segments: List[Dict[str, Any]]) -> Tuple[bytes, int]:
         """Replace text in Excel shared strings table using preprocessed segments with spaces."""
         try:
@@ -503,7 +593,12 @@ class OOXMLRebuilder:
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
             # Process segments with simplified replacement
-            for segment in segments:
+            for idx, segment in enumerate(segments):
+                # Progress reporting every 100 segments
+                if idx % 100 == 0 or idx == len(segments) - 1:
+                    progress_pct = (idx + 1) / len(segments) * 100
+                    self.logger.info(f"[OOXMLRebuilder] Processing XLSX shared strings: {idx + 1}/{len(segments)} ({progress_pct:.1f}%)")
+                
                 # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
                 if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
@@ -567,7 +662,12 @@ class OOXMLRebuilder:
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
             # Process segments with simplified replacement
-            for segment in segments:
+            for idx, segment in enumerate(segments):
+                # Progress reporting every 100 segments
+                if idx % 100 == 0 or idx == len(segments) - 1:
+                    progress_pct = (idx + 1) / len(segments) * 100
+                    self.logger.info(f"[OOXMLRebuilder] Processing XLSX worksheet: {idx + 1}/{len(segments)} ({progress_pct:.1f}%)")
+                
                 # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
                 if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文
@@ -604,7 +704,12 @@ class OOXMLRebuilder:
             segments.sort(key=lambda x: x.get('sequence_id', 0))
             
             # Process segments with simplified replacement
-            for segment in segments:
+            for idx, segment in enumerate(segments):
+                # Progress reporting every 100 segments
+                if idx % 100 == 0 or idx == len(segments) - 1:
+                    progress_pct = (idx + 1) / len(segments) * 100
+                    self.logger.info(f"[OOXMLRebuilder] Processing PPTX slides: {idx + 1}/{len(segments)} ({progress_pct:.1f}%)")
+                
                 # 获取完整的translated_text，包括空字符串（用于缺失翻译的替换）
                 translated_text = segment.get('translated_text', '')
                 if translated_text is None:  # 只跳过None值，保留空字符串用于替换原文

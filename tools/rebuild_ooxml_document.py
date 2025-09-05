@@ -102,14 +102,21 @@ class RebuildOoxmlDocumentTool(Tool):
             rebuilder = OOXMLRebuilder()
             logger.debug(f"[RebuildOoxmlDocument] Rebuilder initialized successfully")
             
-            # Rebuild the document
+            # Rebuild the document with detailed progress
             rebuild_start_time = self._get_current_timestamp()
             logger.info(f"[RebuildOoxmlDocument] Starting document reconstruction - Start time: {rebuild_start_time}")
+            
+            # Provide detailed progress information for user
+            yield self.create_text_message(f"🔄 Processing {len(text_segments)} text segments for document reconstruction...")
+            yield self.create_text_message(f"⏱️ This may take a few minutes for large documents. Progress will be shown every 100 segments.")
+            
             new_file_data, replaced_count = rebuilder.rebuild_document(
                 original_file_data, text_segments, file_type
             )
             rebuild_end_time = self._get_current_timestamp()
             logger.info(f"[RebuildOoxmlDocument] Document rebuilt successfully - End time: {rebuild_end_time}, Replacements: {replaced_count}")
+            
+            yield self.create_text_message(f"✅ Document reconstruction completed! Successfully processed {replaced_count} text replacements.")
             
             # Generate output filename
             original_filename = metadata.get("original_filename", f"document.{file_type}")

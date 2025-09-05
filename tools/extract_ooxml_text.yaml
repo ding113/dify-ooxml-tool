@@ -32,6 +32,34 @@ parameters:
       zh_Hans: "此文档处理会话的唯一标识符"
     llm_description: "Unique identifier for this document processing session, used to track state across workflow nodes"
     form: llm
+  - name: text_unit_level
+    type: select
+    required: false
+    default: "element"
+    form: form
+    label:
+      en_US: "Text Unit Level"
+      zh_Hans: "文本单元级别"
+    human_description:
+      en_US: "Choose text extraction granularity: 'element' extracts individual w:t elements (default, most precise), 'run' extracts w:r runs (reduces fragmentation), 'paragraph' extracts w:p paragraphs (highest coherence)"
+      zh_Hans: "选择文本提取粒度：'element'提取单个w:t元素（默认，最精确），'run'提取w:r运行（减少碎片化），'paragraph'提取w:p段落（最高连贯性）"
+    llm_description: "Text extraction granularity level. 'element' (default) extracts each w:t text element individually for maximum precision. 'run' extracts entire w:r run elements, combining multiple w:t elements with same formatting to reduce translation fragmentation issues like '12A层' being split into separate parts. 'paragraph' extracts entire w:p paragraph elements for maximum semantic coherence."
+    placeholder:
+      en_US: "Select text unit level"
+      zh_Hans: "选择文本单元级别"
+    options:
+      - value: "element"
+        label:
+          en_US: "Element Level (w:t, Default)"
+          zh_Hans: "元素级别（w:t，默认）"
+      - value: "run"
+        label:
+          en_US: "Run Level (w:r)"
+          zh_Hans: "运行级别（w:r）"
+      - value: "paragraph"
+        label:
+          en_US: "Paragraph Level (w:p)"
+          zh_Hans: "段落级别（w:p）"
 extra:
   python:
     source: tools/extract_ooxml_text.py

@@ -28,6 +28,7 @@ class ExtractOoxmlTextTool(Tool):
             # Get parameters
             input_file: File = tool_parameters.get("input_file")
             file_id = tool_parameters.get("file_id", "")
+            text_unit_level = tool_parameters.get("text_unit_level", "element")
             
             # Validate required parameters
             if not file_id:
@@ -41,6 +42,7 @@ class ExtractOoxmlTextTool(Tool):
                 return
             
             logger.info(f"[ExtractOoxmlText] Processing file_id: {file_id}")
+            logger.info(f"[ExtractOoxmlText] Text unit level: {text_unit_level}")
             logger.debug(f"[ExtractOoxmlText] Input file: {input_file.filename}, size: {len(input_file.blob)} bytes")
             yield self.create_text_message(f"Starting OOXML text extraction for file_id: {file_id}")
             
@@ -68,9 +70,9 @@ class ExtractOoxmlTextTool(Tool):
             yield self.create_text_message(f"Detected file type: {file_type.upper()}")
             
             # Parse the file
-            logger.info(f"[ExtractOoxmlText] Starting {file_type.upper()} parsing")
+            logger.info(f"[ExtractOoxmlText] Starting {file_type.upper()} parsing with text unit level: {text_unit_level}")
             parse_start_time = self._get_current_timestamp()
-            parse_result = parser.parse_file(file_data, file_type)
+            parse_result = parser.parse_file(file_data, file_type, text_unit_level)
             parse_end_time = self._get_current_timestamp()
             logger.debug(f"[ExtractOoxmlText] Parsing completed - Start: {parse_start_time}, End: {parse_end_time}")
             
